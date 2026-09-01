@@ -61,11 +61,14 @@ pip install mitmproxy
 
 ```
 FGOcap/
-├── 一键抓包.bat        ← 唯一入口（双击 或 Quicker 里运行它）
-└── tools/
-    ├── auto_capture.py        ← 主脚本
-    ├── fgoaddon.py            ← mitmproxy addon（匹配 /login/top）
-    └── wait_popup_win32.py    ← 原生 Win32 弹窗
+├── README.md
+├── LICENSE
+├── .gitignore
+└── tools/                ← 所有运行文件都在这里
+    ├── 一键抓包.bat        ← 唯一入口（双击 或 Quicker 里运行它）
+    ├── auto_capture.py
+    ├── fgoaddon.py
+    └── wait_popup_win32.py
 ```
 
 ## ▶️ 使用
@@ -86,7 +89,7 @@ FGOcap/
 
 | 字段 | 值 |
 |---|---|
-| 路径或命令 | `C:\你的FGOcap路径\一键抓包.bat` |
+| 路径或命令 | `C:\你的FGOcap路径\tools\一键抓包.bat` |
 | 参数 | （留空） |
 | 失败后停止 | ✅ 勾选 |
 | 激活窗口快捷键 | 不勾 |
