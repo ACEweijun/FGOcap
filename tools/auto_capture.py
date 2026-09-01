@@ -46,8 +46,9 @@ def resolve_mitmdump():
 
     查找顺序：
       1) 本地免安装目录 tools/mitmproxy-12.2.3/mitmdump.exe（兼容旧工具包）
-      2) PATH 中的 mitmdump（pip install mitmproxy 后直接可用）
-      3) python -m mitmdump（模块方式，兜底）
+      2) PATH 中的 mitmdump / mitmdump.exe
+      3) Python 同目录的 Scripts/mitmdump.exe（pip install 后落这里，但通常不在 PATH）
+      4) 仍找不到：抛 FileNotFoundError（main 弹窗会给出修复指引）
     """
     local = TOOLS_DIR / "mitmproxy-12.2.3" / "mitmdump.exe"
     if local.is_file():
@@ -57,10 +58,29 @@ def resolve_mitmdump():
         p = shutil.which(name)
         if p:
             return [p]
-    return [sys.executable, "-m", "mitmdump"]
+    # pip install mitmproxy 后的可执行文件在 Python 同目录的 Scripts/，
+    # 但 Windows 默认不会把这个目录加到 PATH → shutil.which 找不到，
+    # 必须手动到这个目录找（这是绝大多数新用户的实际情况）
+    scripts_dir = Path(sys.executable).parent / "Scripts"
+    for name in ("mitmdump.exe", "mitmdump"):
+        p = scripts_dir / name
+        if p.is_file():
+            return [str(p)]
+    raise FileNotFoundError(
+        "未找到 mitmdump 可执行文件！请二选一：\n"
+        "  1) pip install mitmproxy（推荐）\n"
+        "  2) 解压官方版 mitmproxy 12.2.3 到 tools/mitmproxy-12.2.3/"
+    )
 
 
-MITMDUMP_CMD = resolve_mitmdump()
+# 惰性解析：不在模块导入时跑（避免 resolve_mitmdump 抛错导致整个模块 import 失败、
+# main() 进不去、弹窗都不会弹）。start_mitmdump() 第一次被调用时再解析并缓存。
+_MITMDUMP_CMD = None
+def _get_mitmdump_cmd():
+    global _MITMDUMP_CMD
+    if _MITMDUMP_CMD is None:
+        _MITMDUMP_CMD = resolve_mitmdump()
+    return _MITMDUMP_CMD
 
 # 雷电安装路径（自动探测）
 LDPLAYER_PATHS = [
@@ -281,11 +301,16 @@ def start_mitmdump():
         except Exception as e:
             return None, False, f"无法打开日志文件：{e}"
         try:
+            mitmdump_cmd = _get_mitmdump_cmd()
+        except FileNotFoundError as e:
+            logf.close()
+            return None, False, str(e)
+        try:
             p = subprocess.Popen(
                 # 不要 -q！静默模式让 mitmdump.log 永远为空，
                 # 曾据此误判"mitmdump 0 流量"。flow_detail=1 会打印每条请求，
                 # 是确认 FGO 是否真走代理的唯一可靠依据。
-                MITMDUMP_CMD + ["-p", str(PORT), "-s", str(ADDON),
+                mitmdump_cmd + ["-p", str(PORT), "-s", str(ADDON),
                                 "--set", "flow_detail=1"],
                 cwd=str(TOOLS_DIR),
                 stdout=logf,
