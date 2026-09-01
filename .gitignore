@@ -11,9 +11,7 @@ toplogin/
 *.log
 *.tmp
 wait_popup_err.log
-quicker_trigger.log
 auto_run.log
-mitmdump_test.log
 
 # 第三方二进制 / 安装包（体积大，让用户自行安装）
 tools/mitmproxy-12.2.3/

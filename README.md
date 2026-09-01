@@ -61,14 +61,11 @@ pip install mitmproxy
 
 ```
 FGOcap/
-├── 一键抓包.bat        ← 双击运行（有弹窗、有进度）
-├── 守护抓包.bat        ← 常驻监控模式（可选）
+├── 一键抓包.bat        ← 唯一入口（双击 或 Quicker 里运行它）
 └── tools/
     ├── auto_capture.py        ← 主脚本
     ├── fgoaddon.py            ← mitmproxy addon（匹配 /login/top）
-    ├── wait_popup_win32.py    ← 原生 Win32 弹窗
-    ├── quicker_trigger.py     ← Quicker 触发入口（可选）
-    └── watchdog.py            ← 守护模式（可选）
+    └── wait_popup_win32.py    ← 原生 Win32 弹窗
 ```
 
 ## ▶️ 使用
@@ -81,31 +78,33 @@ FGOcap/
 4. 等 FGO 到登录页，点【登录】
 5. 公告页加载完成 → 抓包成功 → 弹窗自动关 → 剪贴板已有数据、文件夹已打开
 
-### 方式 2：Quicker 动作（推荐，可串联自己的工具流）
+### 方式 2（推荐）：Quicker 动作 — 直接运行 bat
 
-用 `pythonw.exe` 运行 `tools/quicker_trigger.py`（无控制台窗口，只有弹窗），
-可以在 Quicker 里和你的其他工具（Chaldea、桌面小工具、游戏辅助等）**串联成一步**。
-
-**最简配置**（「运行或打开」步骤）：
+抓包不是高频操作（只在需要更新数据时才跑），建议用 Quicker 一键触发。
+**Quicker 的「运行或打开」步骤直接指向 `一键抓包.bat` 即可**——不需要填 pythonw 路径、不需要参数，
+比传统配置简单得多：
 
 | 字段 | 值 |
 |---|---|
-| 路径或命令 | `C:\你的Python安装目录\pythonw.exe` |
-| 参数 | `C:\你的FGOcap路径\tools\quicker_trigger.py` |
+| 路径或命令 | `C:\你的FGOcap路径\一键抓包.bat` |
+| 参数 | （留空） |
 | 失败后停止 | ✅ 勾选 |
 | 激活窗口快捷键 | 不勾 |
+
+**为什么直接跑 bat 就够了**：bat 会自动检测 Python（PATH → 常见安装位置）、自动启动主脚本，
+控制台窗口实时显示 `[1/5]~[5/5]` 进度——Quicker 里少配两个字段，还自带排错可见性。
 
 #### 进阶：串到你的工具流里
 
 如果你的 Quicker 动作原本就是多步骤串联（启动数据导入工具、辅助工具、桌面快捷方式等），
-**把 FGOcap 抓包作为其中一个步骤即可**。典型串联示例：
+**把 `一键抓包.bat` 作为其中一个步骤即可**。典型串联示例：
 
 | 步骤 | 类型 | 目标 | 说明 |
 |---|---|---|---|
 | 1 | 运行/打开 | `Chaldea.exe` | 数据导入工具（待会要用它） |
 | 2 | 运行/打开 | 你的辅助工具 `.cmd` / 快捷方式 | 如截图工具、桌面小工具等 |
 | 3 | 等待时间 | `7000` ms | 给前面工具启动时间 |
-| 4 | 运行/打开 | `pythonw.exe` + 参数 `quicker_trigger.py` | **启动 FGOcap 自动抓包** |
+| 4 | 运行/打开 | `一键抓包.bat` | **启动 FGOcap 自动抓包** |
 
 **完整时序**（步骤 4 触发后自动发生）：
 
@@ -121,13 +120,6 @@ FGOcap/
 → 剪贴板已有 JSON、文件夹已打开 → 切回 Chaldea 一键导入
 ```
 
-#### 为什么用 `pythonw.exe` 而不是 `python.exe`
-
-| 选项 | 控制台 | 用途 |
-|---|---|---|
-| `pythonw.exe` | 无 | **抓包主脚本**（只需要弹窗，不要黑色窗口） |
-| `python.exe` | 有 | 排错时手动跑，看实时 stdout |
-
 **抓包成功的 3 个关键设置**（Quicker 步骤面板）：
 
 - ✅ **失败后停止** — 抓包脚本异常时中断整个动作链
@@ -136,7 +128,7 @@ FGOcap/
 
 #### 抓包失败排错
 
-看 `tools/quicker_trigger.log` 末尾；和方式 1 一样，可对照 `tools/mitmdump.log` 确认 FGO 流量是否进代理。
+看 bat 的控制台窗口（实时进度 + 报错）；或看 `tools/mitmdump.log` 确认 FGO 流量是否进代理。
 
 ### 导入 Chaldea
 
@@ -177,5 +169,5 @@ FGO_PACKAGE = "com.bilibili.fgo.qihoo"  # 目标渠道服包名
 
 ## 📄 License
 
-本仓库脚本（`auto_capture.py` / `wait_popup_win32.py` / `quicker_trigger.py` / `watchdog.py`）采用 MIT License；
+本仓库脚本（`auto_capture.py` / `wait_popup_win32.py` / `一键抓包.bat`）采用 MIT License；
 `fgoaddon.py` 版权归 Chaldea 项目所有。
