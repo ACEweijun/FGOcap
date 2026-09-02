@@ -32,7 +32,7 @@ Android 系统代理 (自动设置) ──→ mitmdump (本机 18080 端口)
 |---|---|---|
 | Windows | 10/11 | 需要能运行 Android 模拟器 |
 | 模拟器 | LDPlayer9（推荐）/ MuMu / Nox，**已 root** | 自动探测常见安装路径 |
-| FGO | 国服 360 渠道服 `com.bilibili.fgo.qihoo` | 其他渠道服需改 `FGO_PACKAGE` 常量 |
+| FGO | 国服  渠道服 `com.bilibili.fgo.qihoo` | 其他渠道服需改 `FGO_PACKAGE` 常量 |
 | Python | 3.10+ | 安装时勾选 **Add to PATH** |
 | mitmproxy | `pip install mitmproxy` | 提供 mitmdump 命令 |
 | Chaldea | 任意平台版本 | 用于导入抓包数据 |
