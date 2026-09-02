@@ -1,0 +1,13 @@
+# 可选配置：装了多个 FGO、或想换区服时，在这里指定包名
+#
+# 用法：把本文件复制一份，改名为 config.ini（config.ini 不存在时，脚本会自动探测）
+#
+# 常见包名：
+#   package=com.bilibili.fgo.qihoo        # 国服 360 渠道服（默认）
+#   package=com.bilibili.fatego           # 国服 B 服
+#   package=com.aniplex.fategrandorder    # 日服 / 台服
+#
+# 不确定自己的包名？在模拟器已开的时候执行：
+#   adb shell pm list packages | findstr -i fate
+#
+package=

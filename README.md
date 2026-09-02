@@ -148,12 +148,39 @@ FGOcap/
 
 ## ⚙️ 配置
 
-打开 `tools/auto_capture.py` 顶部：
+### FGO 包名 / 换区服 / 装了多个 FGO（自动探测，一般不用管）
+
+脚本**不写死单一包名**，启动时自动做三件事：
+
+1. 列出模拟器里所有 FGO 相关包（`pm list packages` 按 `fate` / `fgo` 关键词匹配）
+2. 按内置候选表顺序挑第一个已安装的
+3. 自动查询它的 launcher activity（`cmd package resolve-activity --brief`）
+
+**默认零配置就能跑**。只有这两种情况才需要你手动指定：
+
+| 情况 | 处理 |
+|---|---|
+| 装了**多个** FGO，想换一个抓 | 把 `tools/config.ini.example` 复制为 `tools/config.ini`，写 `package=你的包名` |
+| 候选表里**没有**你的区服 | 同上（config.ini 优先级最高，会覆盖自动探测） |
+
+常见包名：
+
+| 区服 | 包名 |
+|---|---|
+| 国服 360 渠道服（默认） | `com.bilibili.fgo.qihoo` |
+| 国服 B 服 | `com.bilibili.fatego` |
+| 日服 / 台服 | `com.aniplex.fategrandorder` |
+
+不确定包名？模拟器开着时执行：`adb shell pm list packages | findstr -i fate`
+
+> ⚠️ **日服/美服有证书绑定**，需额外把 mitmproxy CA 装进模拟器系统信任库（root + 磁盘可写）；国服/台服不用。
+
+### 其他参数（`tools/auto_capture.py` 顶部）
 
 ```python
-PORT = 18080                          # mitmdump 监听端口
-LDPLAYER_PATHS = [...]                # adb.exe 搜索路径（自动探测，一般不用改）
-FGO_PACKAGE = "com.bilibili.fgo.qihoo"  # 目标渠道服包名
+PORT = 18080                    # mitmdump 监听端口
+LDPLAYER_PATHS = [...]          # adb.exe 搜索路径（自动探测，一般不用改）
+FGO_PACKAGE_CANDIDATES = [...]  # 包名候选表（自动探测用，新渠道可往这里加）
 ```
 
 ## ❓ 常见问题

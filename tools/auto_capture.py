@@ -93,7 +93,19 @@ LDPLAYER_PATHS = [
     r"D:\Program Files\Netease\MuMu Player 12\nx_main\adb.exe",
     r"C:\Program Files\Nox\bin\adb.exe",
 ]
-FGO_PACKAGE = "com.bilibili.fgo.qihoo"   # 360 渠道服
+# ---- FGO 包名：自动探测为主，config.ini 可覆盖 ----
+# 每个人区服/渠道不同，还有人装了多个 FGO，所以不写死单一包名：
+#   1) tools/config.ini 里写了 package=xxx → 优先用用户指定的
+#   2) 否则自动列出模拟器里所有 FGO 相关包，按下面候选顺序挑第一个已安装的
+#   3) 候选都没命中 → 用探测到的第一个 / 兜底默认值
+FGO_PACKAGE_CANDIDATES = [
+    "com.bilibili.fgo.qihoo",        # 国服 360 渠道服（默认）
+    "com.bilibili.fategrandorder",   # 国服其他渠道
+    "com.bilibili.fatego",           # 国服 B 服
+    "com.aniplex.fategrandorder",    # 日服 / 台服
+]
+FGO_PACKAGE = FGO_PACKAGE_CANDIDATES[0]   # 兜底默认值（探测失败时用）
+CONFIG_FILE = TOOLS_DIR / "config.ini"    # 可选：装了多个 FGO 时在这里指定用哪个
 
 # ---------------------------------------------------------------------------
 # 弹窗工具
@@ -201,6 +213,85 @@ def find_serial(adb):
                 return parts[0]
     except Exception:
         return None
+    return None
+
+
+# ---------------------------------------------------------------------------
+# FGO 包名 / 启动入口 自动探测
+# ---------------------------------------------------------------------------
+def load_package_override():
+    """从 tools/config.ini 读取用户指定的 FGO 包名（可选）。
+
+    config.ini 示例（装了多个 FGO 时用）：
+        package=com.bilibili.fgo.qihoo
+    """
+    try:
+        if not CONFIG_FILE.is_file():
+            return None
+        for line in CONFIG_FILE.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = line.strip()
+            if not line or line.startswith(("#", ";")):
+                continue
+            if line.lower().startswith("package"):
+                val = line.split("=", 1)[1].strip()
+                if val:
+                    return val
+    except Exception:
+        pass
+    return None
+
+
+def detect_fgo_packages(adb, serial):
+    """列出模拟器里已安装的 FGO 相关包名（按 fate / fgo 关键词匹配）。"""
+    out = adb_shell(adb, ["pm", "list", "packages"], serial, timeout=30)
+    pkgs = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line.startswith("package:"):
+            continue
+        pkg = line[len("package:"):].strip()
+        low = pkg.lower()
+        if "fate" in low or "fgo" in low:
+            pkgs.append(pkg)
+    return pkgs
+
+
+def resolve_fgo_package(adb, serial):
+    """决定用哪个 FGO 包名。
+
+    优先级：config.ini 指定 > 候选表里已安装的（按顺序）> 探测到的第一个 > 兜底默认值。
+    """
+    override = load_package_override()
+    if override:
+        print(f"[*] FGO 包名（config.ini 指定）: {override}", flush=True)
+        return override
+    installed = detect_fgo_packages(adb, serial)
+    if not installed:
+        print(f"[!] 未探测到 FGO 包，使用默认: {FGO_PACKAGE}", flush=True)
+        return FGO_PACKAGE
+    for cand in FGO_PACKAGE_CANDIDATES:
+        if cand in installed:
+            if len(installed) > 1:
+                print(f"[*] 检测到多个 FGO 包: {installed}", flush=True)
+                print(f"    自动选用: {cand}", flush=True)
+                print(f"    想换别的包？在 tools/config.ini 写: package=包名", flush=True)
+            else:
+                print(f"[*] FGO 包名: {cand}", flush=True)
+            return cand
+    print(f"[*] 候选表未命中，使用探测到的第一个: {installed[0]}", flush=True)
+    return installed[0]
+
+
+def resolve_launcher(adb, serial, pkg):
+    """查询目标包的 launcher activity（不再硬编码 SplashActivity——各区服入口不同）。"""
+    out = adb_shell(
+        adb, ["cmd", "package", "resolve-activity", "--brief", pkg],
+        serial, timeout=20,
+    )
+    for line in out.splitlines():
+        line = line.strip()
+        if "/" in line and line.startswith(pkg):
+            return line
     return None
 
 
@@ -619,12 +710,9 @@ def main():
                 if not wait_boot_complete(adb, serial, timeout_sec=60):
                     print("[2/5] boot 检查超时，继续尝试", flush=True)
 
-            # 3. FGO 检查：只查这一个包（全量 pm list packages 在模拟器上要几十秒）
-            pkg_out = adb_shell(
-                adb, ["pm", "list", "packages", FGO_PACKAGE], serial, timeout=20
-            )
-            if FGO_PACKAGE not in pkg_out:
-                print(f"[3/5] 未检测到 FGO 360 渠道服，继续...", flush=True)
+            # 3. FGO 包名探测：自动识别区服/渠道，装了多个时按优先级选
+            fgo_package = resolve_fgo_package(adb, serial)
+            state["fgo_package"] = fgo_package
 
             set_phase("[3/5] 清理残留代理…")
             # B 优化：3 条 settings 命令合并为 1 条 adb shell 调用
@@ -796,24 +884,39 @@ def main():
     set_phase("🔄 正在启动 FGO…")
     adb2 = state.get("adb")
     serial2 = state.get("serial")
+    # 用探测到的包名（可能是用户在 config.ini 指定的那个）
+    fgo_pkg = state.get("fgo_package") or FGO_PACKAGE
     if adb2 and serial2:
         try:
             # 强制停止（幂等：未运行时 noop）
-            adb_shell(adb2, ["shell", "am", "force-stop", FGO_PACKAGE], serial2)
+            adb_shell(adb2, ["shell", "am", "force-stop", fgo_pkg], serial2)
             time.sleep(2)
-            # 用 am start 启动 FGO 真 launcher activity（SplashActivity）
-            # 之前用 monkey 在 LDPlayer 上不可靠（只 echo 参数不实际启动）
-            launcher = f"{FGO_PACKAGE}/com.bilibili.fatego.SplashActivity"
-            start_out = adb_shell(
-                adb2,
-                ["shell", "am", "start", "-n", launcher],
-                serial2,
-                timeout=15,
-            )
+            # launcher activity 自动查询（各区服/渠道入口不同，不能硬编码）：
+            # cmd package resolve-activity --brief <pkg> 会返回 pkg/xxx.Activity
+            launcher = resolve_launcher(adb2, serial2, fgo_pkg)
+            if not launcher:
+                # 兜底：老版本 Android 可能不支持 resolve-activity，退回 monkey
+                print("[!] resolve-activity 失败，退回 monkey 启动", flush=True)
+                adb_shell(
+                    adb2,
+                    ["shell", "monkey", "-p", fgo_pkg,
+                     "-c", "android.intent.category.LAUNCHER", "1"],
+                    serial2,
+                    timeout=30,
+                )
+                start_out = "(monkey)"
+            else:
+                print(f"[*] launcher: {launcher}", flush=True)
+                start_out = adb_shell(
+                    adb2,
+                    ["shell", "am", "start", "-n", launcher],
+                    serial2,
+                    timeout=15,
+                )
             print(f"[*] am start 输出: {start_out.strip()[:200]}", flush=True)
             # 等 2 秒再查一下，确认进程真起来了
             time.sleep(2)
-            pidof_after = adb_shell(adb2, ["shell", "pidof", FGO_PACKAGE], serial2).strip()
+            pidof_after = adb_shell(adb2, ["shell", "pidof", fgo_pkg], serial2).strip()
             if pidof_after:
                 print(f"[*] FGO 进程已起来: PID={pidof_after}", flush=True)
             else:
