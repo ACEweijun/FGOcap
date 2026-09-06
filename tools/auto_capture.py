@@ -341,26 +341,33 @@ def port_listening(port):
 
 
 def verify_proxy_ready(adb, serial, ip, port):
-    """启动 FGO 前的代理自检，返回 (ok, reason)。
+    """启动 FGO 前的代理自检，返回 (value_ok, icmp_ok, reason)。
 
     【背景 2026-09-06】雷电14 首跑出现 FGO"连接失败，请检查网络"：
     代理写入失败/未生效时 FGO 带着死代理启动必然弹此错。
-    两道检查：
-      1) http_proxy 读回 == ip:port（防写入失败/残留旧值）
-      2) 模拟器 ping 主机 IP（防 NAT 隔离/防火墙导致模拟器根本够不到代理）
+
+    value_ok=False → 硬伤：http_proxy 读回不对（写入失败/残留旧值），
+                     必须重试或阻断启动（否则 FGO 必然连不上）。
+    value_ok=True, icmp_ok=False → 值已写对但 ICMP 不通：只告警不阻断。
+        原因：Windows 防火墙默认拦 ICMP 回声，而 TCP(18080) 不受影响；
+        把 ICMP 当硬门槛会在 NAT 模式下误伤（值写对了也启动不了 FGO，
+        比原始故障更糟）。
     """
-    # 1) 代理值读回比对
+    # 1) 代理值读回比对（硬门槛）
     cur = adb_shell(adb, ["settings", "get", "global", "http_proxy"], serial).strip()
     if cur != f"{ip}:{port}":
-        return False, f"http_proxy 读回 {cur!r}，期望 {ip}:{port}（写入未生效）"
-    # 2) 模拟器 -> 主机连通性（ICMP）
-    out = adb_shell(adb, ["shell", f"ping -c 2 -W 2 {ip}"], serial, timeout=20)
-    low = out.lower()
-    if "ttl=" not in low and "received" not in low:
-        return False, f"模拟器 ping {ip} 无响应（网络隔离/防火墙拦截）"
-    if "100% packet loss" in low or "0 received" in low:
-        return False, f"模拟器 ping {ip} 100% 丢包（模拟器到主机不通）"
-    return True, ""
+        return False, False, f"http_proxy 读回 {cur!r}，期望 {ip}:{port}（写入未生效）"
+    # 2) 模拟器 -> 主机连通性（ICMP，仅诊断，不阻断）
+    try:
+        out = adb_shell(adb, ["shell", f"ping -c 2 -W 2 {ip}"], serial, timeout=20)
+        low = out.lower()
+        if "ttl=" not in low and "received" not in low:
+            return True, False, f"ping {ip} 无输出（Windows 防火墙常拦 ICMP，TCP 走代理不受影响）"
+        if "100% packet loss" in low or "0 received" in low:
+            return True, False, f"ping {ip} 丢包（Windows 防火墙常拦 ICMP，TCP 走代理不受影响）"
+    except Exception as e:
+        return True, False, f"ping 探测异常（{e}）"
+    return True, True, ""
 
 
 def adb_restart_server(adb, timeout=30):
@@ -747,6 +754,14 @@ def main():
             state["fgo_package"] = fgo_package
 
             set_phase("[3/5] 清理残留代理…")
+            # 先打印旧值作诊断：若上回运行残留了失效代理（旧 IP），
+            # 正是 FGO"连接失败，请检查网络"的常见诱因。
+            try:
+                _old = adb_shell(adb, ["settings", "get", "global", "http_proxy"], serial).strip()
+                if _old and _old != "null":
+                    print(f"[3/5] 检测到残留代理 {_old}，正在清除…", flush=True)
+            except Exception:
+                pass
             # ⚠️ 严禁用 `settings put global http_proxy :0` 清空！
             # 历史回归：`:0` 会让 FGO/Unity 读老 API 拿到空代理 → 直连 443 →
             # mitmdump 0 流量 → 永远抓不到 toplogin（"抓取没反应"）。
@@ -800,10 +815,14 @@ def main():
                     serial,
                 )
                 time.sleep(2)  # ConnectivityService 监听 settings 变更生效
-                ok, last_reason = verify_proxy_ready(adb, serial, ip, PORT)
-                if ok:
+                v_ok, i_ok, last_reason = verify_proxy_ready(adb, serial, ip, PORT)
+                if v_ok:
                     verified = True
-                    print(f"[5/5] 代理自检通过（第 {attempt} 次）: {proxy}", flush=True)
+                    if i_ok:
+                        print(f"[5/5] 代理自检通过（第 {attempt} 次）: {proxy}", flush=True)
+                    else:
+                        print(f"[5/5] 代理值已写对（第 {attempt} 次）: {proxy}", flush=True)
+                        print(f"[5/5] 提示：{last_reason}", flush=True)
                     break
                 print(f"[5/5] 代理自检失败（第 {attempt}/3 次）：{last_reason}", flush=True)
                 if attempt < 3:
@@ -947,9 +966,10 @@ def main():
                     serial2,
                 )
                 time.sleep(2)
-                _ok, _reason = verify_proxy_ready(adb2, serial2, _pip, PORT)
-                if _ok:
-                    print("[✓] 启动 FGO 前代理已自愈", flush=True)
+                _v_ok, _i_ok, _reason = verify_proxy_ready(adb2, serial2, _pip, PORT)
+                if _v_ok:
+                    print("[✓] 启动 FGO 前代理已自愈"
+                          + ("" if _i_ok else f"（{_reason}）"), flush=True)
                 else:
                     print(f"[!] 启动前代理自愈失败：{_reason}（FGO 可能报连接失败，检查防火墙/{_pip} 可达性）", flush=True)
             else:
