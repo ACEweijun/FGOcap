@@ -149,10 +149,17 @@ def ask(text):
 # ---------------------------------------------------------------------------
 def find_adb():
     """探测模拟器 adb 路径，返回第一个存在的。"""
+    # 雷电：通配 G:\leidian\LDPlayer*\adb.exe（兼容 LDPlayer9/12/13/14/15 等任意版本号）
+    # glob 默认字典序，LDPlayer1*/LDPlayer20 会优先于 LDPlayer9；
+    # 绝大多数情况只装一个，命中即返回
+    for adb in sorted(glob.glob(r"G:\leidian\LDPlayer*\adb.exe")):
+        if os.path.isfile(adb):
+            return adb
+    # 兜底：硬编码路径（MuMu/Nox 等非雷电模拟器 + 雷电装在 C/D 等其他盘符）
     for p in LDPLAYER_PATHS:
         if os.path.isfile(p):
             return p
-    # 兜底：在 PATH 里找
+    # 兜底：PATH 环境变量里的 adb
     for d in os.environ.get("PATH", "").split(";"):
         if not d:
             continue
