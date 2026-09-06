@@ -340,6 +340,29 @@ def port_listening(port):
     return False
 
 
+def verify_proxy_ready(adb, serial, ip, port):
+    """启动 FGO 前的代理自检，返回 (ok, reason)。
+
+    【背景 2026-09-06】雷电14 首跑出现 FGO"连接失败，请检查网络"：
+    代理写入失败/未生效时 FGO 带着死代理启动必然弹此错。
+    两道检查：
+      1) http_proxy 读回 == ip:port（防写入失败/残留旧值）
+      2) 模拟器 ping 主机 IP（防 NAT 隔离/防火墙导致模拟器根本够不到代理）
+    """
+    # 1) 代理值读回比对
+    cur = adb_shell(adb, ["settings", "get", "global", "http_proxy"], serial).strip()
+    if cur != f"{ip}:{port}":
+        return False, f"http_proxy 读回 {cur!r}，期望 {ip}:{port}（写入未生效）"
+    # 2) 模拟器 -> 主机连通性（ICMP）
+    out = adb_shell(adb, ["shell", f"ping -c 2 -W 2 {ip}"], serial, timeout=20)
+    low = out.lower()
+    if "ttl=" not in low and "received" not in low:
+        return False, f"模拟器 ping {ip} 无响应（网络隔离/防火墙拦截）"
+    if "100% packet loss" in low or "0 received" in low:
+        return False, f"模拟器 ping {ip} 100% 丢包（模拟器到主机不通）"
+    return True, ""
+
+
 def adb_restart_server(adb, timeout=30):
     """重启 adb server（kill + start），解决 LDPlayer 偶发断连。"""
     try:
@@ -658,11 +681,13 @@ def main():
         if adb and serial:
             try:
                 # 三个代理设置全部还原（老 API + 新 API），
-                # 否则残留 global_http_proxy_host/port 会让模拟器断网
+                # 否则残留 global_http_proxy_host/port 会让模拟器断网。
+                # ⚠️ 严禁用 `:0` 清空（历史回归会令 FGO 直连 443 → 抓不到包），
+                # 用 delete 彻底清除。
                 adb_shell(
                     adb,
                     ["shell",
-                     "settings put global http_proxy :0; "
+                     "settings delete global http_proxy; "
                      "settings delete global global_http_proxy_host; "
                      "settings delete global global_http_proxy_port"],
                     serial,
@@ -722,11 +747,14 @@ def main():
             state["fgo_package"] = fgo_package
 
             set_phase("[3/5] 清理残留代理…")
-            # B 优化：3 条 settings 命令合并为 1 条 adb shell 调用
+            # ⚠️ 严禁用 `settings put global http_proxy :0` 清空！
+            # 历史回归：`:0` 会让 FGO/Unity 读老 API 拿到空代理 → 直连 443 →
+            # mitmdump 0 流量 → 永远抓不到 toplogin（"抓取没反应"）。
+            # 正确做法：直接 delete 三条 key，彻底清除不留危险值，[5/5] 再重设正确值。
             adb_shell(
                 adb,
                 ["shell",
-                 "settings put global http_proxy :0; "
+                 "settings delete global http_proxy; "
                  "settings delete global global_http_proxy_host; "
                  "settings delete global global_http_proxy_port"],
                 serial,
@@ -756,27 +784,13 @@ def main():
             # 历史回归 bug：曾把 http_proxy 设成 :0（空），FGO/Unity 读的正是老 API
             # → 拿到空代理 → 直连 443 → mitmdump 0 流量 → 永远抓不到 toplogin。
             # 老 API + 新 API 同时设，两种客户端都覆盖。
-            adb_shell(
-                adb,
-                ["shell",
-                 f"settings put global http_proxy {ip}:{PORT}; "
-                 f"settings put global global_http_proxy_host {ip}; "
-                 f"settings put global global_http_proxy_port {PORT}"],
-                serial,
-            )
-            time.sleep(2)  # ConnectivityService 监听 settings 变更生效
-
-            # 状态校验（不阻断，让数据抓到为准；adb 偶尔读回空不致命）
-            cur = adb_shell(adb, ["settings", "get", "global", "http_proxy"], serial)
-            new_host = adb_shell(adb, ["settings", "get", "global",
-                                        "global_http_proxy_host"], serial)
-            new_port = adb_shell(adb, ["settings", "get", "global",
-                                        "global_http_proxy_port"], serial)
-            new_ok = (new_host == ip and new_port == str(PORT))
-            if cur != proxy and not new_ok:
-                print("[5/5] 代理读回不匹配，重连 adb 重试一次", flush=True)
-                adb_restart_server(adb)
-                time.sleep(2)
+            # 【2026-09-06 强化】设置后立即自检（读回 + ping 主机），最多 3 轮；
+            # 全部失败 → 报错退出（atexit 清代理恢复模拟器网络），
+            # 绝不带死代理启动 FGO（否则 FGO 必弹"连接失败，请检查网络"）。
+            state["proxy_verified"] = False
+            verified = False
+            last_reason = ""
+            for attempt in range(1, 4):
                 adb_shell(
                     adb,
                     ["shell",
@@ -785,10 +799,30 @@ def main():
                      f"settings put global global_http_proxy_port {PORT}"],
                     serial,
                 )
-                time.sleep(2)
+                time.sleep(2)  # ConnectivityService 监听 settings 变更生效
+                ok, last_reason = verify_proxy_ready(adb, serial, ip, PORT)
+                if ok:
+                    verified = True
+                    print(f"[5/5] 代理自检通过（第 {attempt} 次）: {proxy}", flush=True)
+                    break
+                print(f"[5/5] 代理自检失败（第 {attempt}/3 次）：{last_reason}", flush=True)
+                if attempt < 3:
+                    print("[5/5] 重启 adb 后重试…", flush=True)
+                    adb_restart_server(adb)
+                    time.sleep(2)
+            if not verified:
+                state["error"] = (
+                    f"代理自检 3 次未通过，未启动 FGO（避免其报\"连接失败\"）：\n"
+                    f"{last_reason}\n\n"
+                    f"请检查：电脑防火墙是否放通端口 {PORT}；"
+                    f"模拟器网络模式（NAT/桥接）能否访问主机 {ip}"
+                )
+                set_phase("❌ 代理自检失败，未启动 FGO（详见弹窗/控制台）")
+                return
 
             state["adb"] = adb
             state["ready"] = True
+            state["proxy_verified"] = True
             state["ip"] = ip  # 缓存供 wait_for_capture 复用
             ready_msg = (
                 f"✓ 抓包环境已就绪\n"
@@ -895,6 +929,31 @@ def main():
     fgo_pkg = state.get("fgo_package") or FGO_PACKAGE
     if adb2 and serial2:
         try:
+            # 【2026-09-06 启动前守门】就绪后到真正拉起 FGO 之间，
+            # 代理可能被外部清空（模拟器重连 / 系统重置 / 残留配置回写），
+            # 一旦 FGO 带着失效代理启动必弹"连接失败，请检查网络"。
+            # 这里在 force-stop 之前做最后一道读回校验：不匹配就重设 + 自愈。
+            _pip = state.get("ip") or get_lan_ip() or ""
+            _expected = f"{_pip}:{PORT}"
+            _cur = adb_shell(adb2, ["settings", "get", "global", "http_proxy"], serial2).strip()
+            if _cur != _expected:
+                print(f"[!] 启动 FGO 前代理读回 {_cur!r} ≠ 期望 {_expected}，重新写入…", flush=True)
+                adb_shell(
+                    adb2,
+                    ["shell",
+                     f"settings put global http_proxy {_expected}; "
+                     f"settings put global global_http_proxy_host {_pip}; "
+                     f"settings put global global_http_proxy_port {PORT}"],
+                    serial2,
+                )
+                time.sleep(2)
+                _ok, _reason = verify_proxy_ready(adb2, serial2, _pip, PORT)
+                if _ok:
+                    print("[✓] 启动 FGO 前代理已自愈", flush=True)
+                else:
+                    print(f"[!] 启动前代理自愈失败：{_reason}（FGO 可能报连接失败，检查防火墙/{_pip} 可达性）", flush=True)
+            else:
+                print(f"[✓] 启动 FGO 前代理校验通过: {_expected}", flush=True)
             # 强制停止（幂等：未运行时 noop）
             adb_shell(adb2, ["shell", "am", "force-stop", fgo_pkg], serial2)
             time.sleep(2)
@@ -976,10 +1035,11 @@ def main():
 
     # ===== 4. 清理 + 结果（保留原逻辑）=====
     if state.get("adb") and state.get("serial"):
+        # ⚠️ 严禁用 `:0` 清空（历史回归令 FGO 直连 443）→ 用 delete 彻底清除
         adb_shell(
             state["adb"],
             ["shell",
-             "settings put global http_proxy :0; "
+             "settings delete global http_proxy; "
              "settings delete global global_http_proxy_host; "
              "settings delete global global_http_proxy_port"],
             state["serial"],
