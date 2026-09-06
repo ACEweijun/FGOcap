@@ -17,9 +17,12 @@ FGO 国服一键抓包（自动版）
 
 import ctypes
 import glob
+import hashlib
 import os
 import re
 import socket
+import ssl
+import struct
 import subprocess
 import sys
 import threading
@@ -368,6 +371,91 @@ def verify_proxy_ready(adb, serial, ip, port):
     except Exception as e:
         return True, False, f"ping 探测异常（{e}）"
     return True, True, ""
+
+
+# ---------------------------------------------------------------------------
+# mitmproxy CA 自动安装
+# 【2026-09-06 雷电14】全新模拟器系统库没有 mitmproxy CA → 360 渠道服 SDK 严格
+# 校验证书 → FGO HTTPS 走代理握手失败 → 弹"连接失败，请检查网络"。
+# 修复：root 下把 CA 写入系统证书库（Android 14 双路径：APEX + legacy）。
+# ---------------------------------------------------------------------------
+def _der_children(data):
+    """迷你 DER 解析：返回 [(tag, content, start, end)]，start/end 为元素全区间。"""
+    i, out = 0, []
+    while i < len(data):
+        s = i
+        tag = data[i]; i += 1
+        ln = data[i]; i += 1
+        if ln & 0x80:
+            n = ln & 0x7f
+            ln = int.from_bytes(data[i:i + n], "big"); i += n
+        out.append((tag, data[i:i + ln], s, i + ln))
+        i += ln
+    return out
+
+
+def cert_subject_hash_old(pem):
+    """实现 openssl `x509 -subject_hash_old`（Android CA 文件名 = <hash>.0）：
+    取 subject SEQUENCE 完整 DER（含 30 头）做 MD5，前 4 字节按小端显示为 8 位 hex。"""
+    der = ssl.PEM_cert_to_DER_cert(pem)
+    cert_seq = _der_children(der)[0]
+    inner = _der_children(cert_seq[1])
+    tbs = [f for f in _der_children(inner[0][1]) if f[0] != 0xA0]
+    _, _, s, e = tbs[4]  # 0=serial 1=sigAlg 2=issuer 3=validity 4=subject
+    subject_der = inner[0][1][s:e]
+    return "%08x.0" % struct.unpack("<I", hashlib.md5(subject_der).digest()[:4])[0]
+
+
+def mitm_ca_path():
+    """定位主机 mitmproxy CA（mitmdump 首次运行自动生成于 ~/.mitmproxy）。"""
+    for name in ("mitmproxy-ca-cert.pem", "mitmproxy-ca-cert.cer"):
+        p = Path.home() / ".mitmproxy" / name
+        if p.is_file():
+            return p
+    return None
+
+
+def emulator_has_ca(adb, serial, name):
+    """模拟器系统证书库（APEX / legacy 任一）已含目标 CA？"""
+    for d in ("/apex/com.android.conscrypt/cacerts", "/system/etc/security/cacerts"):
+        out = adb_shell(adb, ["shell", f"ls {d}/{name}"], serial, timeout=10).strip()
+        if out and "No such" not in out and "not found" not in out and "No such file" not in out:
+            return True
+    return False
+
+
+def ensure_mitm_ca(adb, serial):
+    """确保模拟器信任 mitmproxy CA；缺失则 root 写入双库。返回 (ok, msg)。"""
+    ca = mitm_ca_path()
+    if not ca:
+        return False, "未找到主机 mitmproxy CA（~/.mitmproxy/mitmproxy-ca-cert.pem），请先跑过一次 mitmdump 生成"
+    try:
+        pem = ca.read_text(encoding="utf-8", errors="replace")
+        name = cert_subject_hash_old(pem)
+    except Exception as e:
+        return False, f"计算 CA 文件名失败：{e}"
+    if emulator_has_ca(adb, serial, name):
+        return True, f"模拟器已信任 mitmproxy CA（{name}）"
+    tmp = f"/data/local/tmp/{name}"
+    try:
+        subprocess.run([adb, "-s", serial, "push", str(ca), tmp],
+                       capture_output=True, timeout=30)
+    except Exception:
+        return False, f"推送 CA 到模拟器失败（{name}）"
+    script = (
+        f"mount -o rw,remount /apex/com.android.conscrypt 2>/dev/null; "
+        f"mount -o rw,remount /system 2>/dev/null; "
+        f"mount -o rw,remount / 2>/dev/null; "
+        f"cp {tmp} /apex/com.android.conscrypt/cacerts/{name}; "
+        f"cp {tmp} /system/etc/security/cacerts/{name}; "
+        f"chmod 644 /apex/com.android.conscrypt/cacerts/{name} "
+        f"/system/etc/security/cacerts/{name} 2>/dev/null; "
+        f"rm -f {tmp}"
+    )
+    adb_shell(adb, ["shell", "su", "-c", script], serial, timeout=30)
+    if emulator_has_ca(adb, serial, name):
+        return True, f"mitmproxy CA 已安装到模拟器系统证书库（{name}）"
+    return False, f"CA 写入模拟器失败（{name}）：请确认模拟器已开 root"
 
 
 def adb_restart_server(adb, timeout=30):
@@ -787,6 +875,20 @@ def main():
                 return
             state["mitm_proc"] = proc
             print(f"[4/5] 抓包服务已启动（端口 {PORT}）", flush=True)
+
+            # 【2026-09-06 雷电14/Android 14】全新模拟器系统库没有 mitmproxy CA →
+            # 360 渠道服 SDK 严格校验 → FGO HTTPS 走代理握手失败 → "连接失败"。
+            # 此时 mitmdump 已跑过一次，~/.mitmproxy CA 必已生成，root 写双库（APEX+legacy）。
+            ca_ok, ca_msg = ensure_mitm_ca(adb, serial)
+            print(f"[4/5] CA: {ca_msg}", flush=True)
+            if not ca_ok:
+                state["error"] = (
+                    f"模拟器未信任 mitmproxy CA：{ca_msg}\n\n"
+                    f"不装 CA，FGO/360 SDK 的 HTTPS 会在代理处握手失败并报连接错误。"
+                    f"请确认模拟器已开启 root 后重试。"
+                )
+                set_phase("❌ CA 未装成功（详见弹窗）")
+                return
 
             set_phase("[5/5] 设置代理…")
             ip = get_lan_ip()
