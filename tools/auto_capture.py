@@ -768,6 +768,9 @@ def main():
     # atexit：任何退出路径都还原代理 + 停 mitmdump
     import atexit
     def cleanup():
+        # 已交棒给后台守护（成功路径）→ 什么都不做，让 FGO 继续走代理、不断线
+        if state.get("handoff_to_daemon"):
+            return
         # 1) 确保弹窗进程被回收（残留会让下次运行出现两个窗口）
         try:
             if popup.poll() is None:
@@ -1170,27 +1173,25 @@ def main():
         proxy_str=proxy_str, port=PORT, timeout=600,
     )
 
-    # ===== 4. 清理 + 结果（保留原逻辑）=====
-    # 【2026-09-07 关键修复】清代理必须在 FGO 退出之后！
-    # 血泪教训：FGO 游戏中保持长连接（走代理），脚本退出瞬间删代理
-    # → ConnectivityService 网络刷新 → FGO 活动连接全被切
-    # → "与服务器连接中断。是否重试？"（9/6 雷电14、9/7 雷电9 均复现）。
-    # 修复：抓包结束（成功/失败/取消）都先 force-stop FGO，再清代理，
-    # 最后自动重启 FGO（直连模式冷启动），用户重新登录即可无缝继续玩。
-    if state.get("adb") and state.get("serial"):
-        _adb, _serial = state["adb"], state["serial"]
-        _pkg = state.get("fgo_package") or FGO_PACKAGE
-        # 1) 先停 FGO（在跑才停）
+    # ===== 4. 清理 + 结果 =====
+    # 【2026-09-07 优雅方案】成功路径：不删代理、不杀 mitmdump、不动 FGO，
+    # 改由 _cleanup_daemon.py 在后台等 FGO 退出后再清理 → FGO 全程无感、不断线、不重启。
+    _adb = state.get("adb")
+    _serial = state.get("serial")
+    _pkg = state.get("fgo_package") or FGO_PACKAGE
+
+    def _stop_fgo_and_clear_proxy():
+        """停 FGO 再清代理（仅用于失败/取消路径——此时 FGO 没在正常游玩）。"""
+        if not (_adb and _serial):
+            return
         try:
             _pid = adb_shell(_adb, ["shell", "pidof", _pkg], _serial).strip()
             if _pid:
-                print(f"[*] 抓包结束，先停止 FGO（避免清代理切断其连接）PID={_pid}", flush=True)
                 adb_shell(_adb, ["shell", "am", "force-stop", _pkg], _serial)
                 time.sleep(2)
         except Exception:
             pass
-        # 2) 再清代理（⚠️ 严禁 `:0` 清空——历史回归令 FGO 直连 443）
-        # 用 delete 彻底清除三条
+        # ⚠️ 严禁用 `:0` 清空（历史回归令 FGO 直连 443）→ 用 delete 彻底清除
         adb_shell(
             _adb,
             ["shell",
@@ -1199,16 +1200,9 @@ def main():
              "settings delete global global_http_proxy_port"],
             _serial,
         )
-        # 3) 自动重启 FGO（直连模式）
-        try:
-            launcher = resolve_launcher(_adb, _serial, _pkg)
-            if launcher:
-                adb_shell(_adb, ["shell", "am", "start", "-n", launcher], _serial, timeout=15)
-                print(f"[*] FGO 已以直连模式重启: {launcher}", flush=True)
-        except Exception as e:
-            print(f"[!] FGO 重启失败（可手动打开）: {e}", flush=True)
 
     if cancelled:
+        _stop_fgo_and_clear_proxy()
         warn(
             "已取消等待。\n\n代理已自动还原。\n\n"
             "提示：FGO 需要登录到【地球仪/公告页】才会触发抓包，\n"
@@ -1218,6 +1212,7 @@ def main():
         return
 
     if not found:
+        _stop_fgo_and_clear_proxy()
         error(
             "未检测到新的抓包数据。\n\n"
             "可能原因：\n"
@@ -1229,7 +1224,7 @@ def main():
         )
         return
 
-    # ===== 5. 成功 =====
+    # ===== 5. 成功：FGO 保持在线，清理交给后台守护 =====
     size_mb = found.stat().st_size / 1024 / 1024
 
     copied = False
@@ -1254,6 +1249,31 @@ def main():
     except Exception:
         pass
 
+    # 拉起清理守护：等 FGO 退出后自动清代理 + 停 mitmdump。
+    # 这样 FGO 全程无感（代理/mitmdump 都还在），不会因清代理被切断连接。
+    try:
+        daemon_py = TOOLS_DIR / "_cleanup_daemon.py"
+        if daemon_py.is_file() and _adb and _serial:
+            # 先清掉旧守护，避免多次抓包叠加多个守护
+            subprocess.run(
+                'wmic process where "name like \'%%python%%\' and commandline '
+                'like \'%%_cleanup_daemon.py%%\'" delete 2>nul',
+                shell=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            subprocess.Popen(
+                [pythonw, str(daemon_py), _adb, _serial, _pkg, str(PORT)],
+                creationflags=(
+                    subprocess.DETACHED_PROCESS
+                    | subprocess.CREATE_NEW_PROCESS_GROUP
+                    | subprocess.CREATE_NO_WINDOW
+                ),
+            )
+            print("[*] 清理守护已启动：FGO 退出后自动还原代理", flush=True)
+            # 交棒：主脚本退出时 atexit 不再清代理/停 mitmdump（避免切断 FGO 连接）
+            state["handoff_to_daemon"] = True
+    except Exception as e:
+        print(f"[!] 清理守护启动失败（可手动清代理）：{e}", flush=True)
+
     if copied:
         hint = (
             "✅ 已自动复制到剪贴板！\n\n"
@@ -1276,7 +1296,9 @@ def main():
         f"文件：{found.name}\n"
         f"大小：{size_mb:.1f} MB\n\n"
         f"{hint}\n\n"
-        f"代理已自动还原，抓包服务已停止。"
+        f"✅ FGO 保持在线（未中断、未重启）。\n"
+        f"退出 FGO 后代理会自动还原；\n"
+        f"下次运行本工具也会自动清理。"
     )
 
 
