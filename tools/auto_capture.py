@@ -783,21 +783,27 @@ def main():
         # 2) 还原代理
         adb, serial = state.get("adb"), state.get("serial")
         if adb and serial:
+            # 2a) 先停 FGO——清代理会切断其游戏连接（"与服务器连接中断"）
             try:
-                # 三个代理设置全部还原（老 API + 新 API），
-                # 否则残留 global_http_proxy_host/port 会让模拟器断网。
-                # ⚠️ 严禁用 `:0` 清空（历史回归会令 FGO 直连 443 → 抓不到包），
-                # 用 delete 彻底清除。
-                adb_shell(
-                    adb,
-                    ["shell",
-                     "settings delete global http_proxy; "
-                     "settings delete global global_http_proxy_host; "
-                     "settings delete global global_http_proxy_port"],
-                    serial,
-                )
+                _pkg = state.get("fgo_package") or FGO_PACKAGE
+                _pid = adb_shell(adb, ["shell", "pidof", _pkg], serial).strip()
+                if _pid:
+                    adb_shell(adb, ["shell", "am", "force-stop", _pkg], serial)
+                    time.sleep(1)
             except Exception:
                 pass
+            # 2b) 三个代理设置全部还原（老 API + 新 API），
+            # 否则残留 global_http_proxy_host/port 会让模拟器断网。
+            # ⚠️ 严禁用 `:0` 清空（历史回归会令 FGO 直连 443 → 抓不到包），
+            # 用 delete 彻底清除。
+            adb_shell(
+                adb,
+                ["shell",
+                 "settings delete global http_proxy; "
+                 "settings delete global global_http_proxy_host; "
+                 "settings delete global global_http_proxy_port"],
+                serial,
+            )
         p = state.get("mitm_proc")
         if p:
             try:
@@ -1165,16 +1171,42 @@ def main():
     )
 
     # ===== 4. 清理 + 结果（保留原逻辑）=====
+    # 【2026-09-07 关键修复】清代理必须在 FGO 退出之后！
+    # 血泪教训：FGO 游戏中保持长连接（走代理），脚本退出瞬间删代理
+    # → ConnectivityService 网络刷新 → FGO 活动连接全被切
+    # → "与服务器连接中断。是否重试？"（9/6 雷电14、9/7 雷电9 均复现）。
+    # 修复：抓包结束（成功/失败/取消）都先 force-stop FGO，再清代理，
+    # 最后自动重启 FGO（直连模式冷启动），用户重新登录即可无缝继续玩。
     if state.get("adb") and state.get("serial"):
-        # ⚠️ 严禁用 `:0` 清空（历史回归令 FGO 直连 443）→ 用 delete 彻底清除
+        _adb, _serial = state["adb"], state["serial"]
+        _pkg = state.get("fgo_package") or FGO_PACKAGE
+        # 1) 先停 FGO（在跑才停）
+        try:
+            _pid = adb_shell(_adb, ["shell", "pidof", _pkg], _serial).strip()
+            if _pid:
+                print(f"[*] 抓包结束，先停止 FGO（避免清代理切断其连接）PID={_pid}", flush=True)
+                adb_shell(_adb, ["shell", "am", "force-stop", _pkg], _serial)
+                time.sleep(2)
+        except Exception:
+            pass
+        # 2) 再清代理（⚠️ 严禁 `:0` 清空——历史回归令 FGO 直连 443）
+        # 用 delete 彻底清除三条
         adb_shell(
-            state["adb"],
+            _adb,
             ["shell",
              "settings delete global http_proxy; "
              "settings delete global global_http_proxy_host; "
              "settings delete global global_http_proxy_port"],
-            state["serial"],
+            _serial,
         )
+        # 3) 自动重启 FGO（直连模式）
+        try:
+            launcher = resolve_launcher(_adb, _serial, _pkg)
+            if launcher:
+                adb_shell(_adb, ["shell", "am", "start", "-n", launcher], _serial, timeout=15)
+                print(f"[*] FGO 已以直连模式重启: {launcher}", flush=True)
+        except Exception as e:
+            print(f"[!] FGO 重启失败（可手动打开）: {e}", flush=True)
 
     if cancelled:
         warn(
