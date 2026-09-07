@@ -442,20 +442,29 @@ def ensure_mitm_ca(adb, serial):
                        capture_output=True, timeout=30)
     except Exception:
         return False, f"推送 CA 到模拟器失败（{name}）"
+    # 【2026-09-07 雷电9/Android9】雷电 9 默认 adbd 非 root → su -c mount 权限不足，
+    # 写 system 前先 `adb root` 把 adbd 切到 root（ro.debuggable=1 有效；失败不阻断）。
+    try:
+        subprocess.run([adb, "-s", serial, "root"], capture_output=True, timeout=15)
+        time.sleep(2)
+    except Exception:
+        pass
+    # remount/cp 顺序：`/`（system-as-root，雷电9/Android9+）优先于 /system（老版），
+    # APEX 仅 Android 10+ 有。cp 同理先 /system legacy 库。
     script = (
-        f"mount -o rw,remount /apex/com.android.conscrypt 2>/dev/null; "
-        f"mount -o rw,remount /system 2>/dev/null; "
         f"mount -o rw,remount / 2>/dev/null; "
-        f"cp {tmp} /apex/com.android.conscrypt/cacerts/{name}; "
+        f"mount -o rw,remount /system 2>/dev/null; "
+        f"mount -o rw,remount /apex/com.android.conscrypt 2>/dev/null; "
         f"cp {tmp} /system/etc/security/cacerts/{name}; "
-        f"chmod 644 /apex/com.android.conscrypt/cacerts/{name} "
-        f"/system/etc/security/cacerts/{name} 2>/dev/null; "
+        f"cp {tmp} /apex/com.android.conscrypt/cacerts/{name}; "
+        f"chmod 644 /system/etc/security/cacerts/{name} "
+        f"/apex/com.android.conscrypt/cacerts/{name} 2>/dev/null; "
         f"rm -f {tmp}"
     )
     adb_shell(adb, ["shell", "su", "-c", script], serial, timeout=30)
     if emulator_has_ca(adb, serial, name):
         return True, f"mitmproxy CA 已安装到模拟器系统证书库（{name}）"
-    return False, f"CA 写入模拟器失败（{name}）：请确认模拟器已开 root"
+    return False, f"CA 写入模拟器失败（{name}）：请确认模拟器已开 root（多开管理器→设置→ROOT权限）"
 
 
 def adb_restart_server(adb, timeout=30):
