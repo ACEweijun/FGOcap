@@ -2,17 +2,24 @@
 """
 FGO 国服一键抓包（自动版）
 =========================
-设计目标：全程无需键盘输入，只靠「弹窗点确定」推进流程。
+设计目标：全程零交互 —— 触发后到抓包完成，用户无需任何键盘/鼠标操作。
 
 流程：
-  1. 欢迎 + 检查模拟器 adb（自动定位雷电/常见模拟器）
-  2. 启动 mitmdump 抓包服务（后台）
-  3. 自动获取电脑局域网 IP 并设置模拟器代理
-  4. 弹窗提示：请登录 FGO 到地球仪/公告页
-  5. 自动轮询 toplogin 目录，发现新 json 即成功
-  6. 自动清理：清除代理 + 停止抓包 + 提示导入 Chaldea
+  [1/5] 自动定位模拟器 adb（glob 匹配 LDPlayer*/adb.exe，兼容雷电 9/12/14）
+  [2/5] 等待模拟器就绪（boot_completed）
+  [3/5] 清理上一轮残留代理（三条 settings delete，绝不用 `:0`）
+  [4/5] 启动 mitmdump（:18080）+ 自动安装 mitmproxy CA
+        （未信任时 root 写入系统库；Android 14 写 APEX+legacy 双库，
+          Android 9 为 system-as-root 需 remount `/` 而非 `/system`）
+  [5/5] 设置代理并自检（读回校验，最多 3 轮；全败则报错退出，
+        绝不带失效代理启动 FGO）+ 冷启动 FGO（force-stop + am start）
+  等待期：自动点击屏幕中央帮用户点【登录】（每 1.5s，默认 90s 窗口，
+        抓到 toplogin 立即停；超时未抓到则结束脚本）
+  成功：toplogin JSON 自动复制剪贴板 + 打开文件夹 → 导入 Chaldea
+  收尾：成功路径**不删代理、不停 mitmdump、不动 FGO**（避免切断游戏连接），
+        改由 _cleanup_daemon.py 守护，等 FGO 退出后自动还原环境
 
-用法：双击「一键抓包.bat」即可。任何一步失败都会弹窗说明原因。
+用法：双击「一键抓包.bat」或用 Quicker 运行它。任何一步失败都会弹窗说明原因。
 """
 
 import ctypes
@@ -86,7 +93,11 @@ def _get_mitmdump_cmd():
     return _MITMDUMP_CMD
 
 # 雷电安装路径（自动探测）
+# 兜底硬编码（find_adb() 会先用 glob 匹配 G:\leidian\LDPlayer*\adb.exe，
+# 覆盖雷电 9/12/13/14/15+ 任意版本；这里只是 glob 失效时的备用）
 LDPLAYER_PATHS = [
+    r"G:\leidian\LDPlayer14\adb.exe",
+    r"G:\leidian\LDPlayer12\adb.exe",
     r"G:\leidian\LDPlayer9\adb.exe",
     r"D:\LDPlayer\LDPlayer9\adb.exe",
     r"C:\LDPlayer\LDPlayer9\adb.exe",
@@ -845,7 +856,8 @@ def main():
         "cancelled": False,
     }
 
-    # atexit：任何退出路径都还原代理 + 停 mitmdump
+    # atexit：异常/取消路径还原代理 + 停 mitmdump
+    # （成功路径会交棒给 _cleanup_daemon，见下方 handoff_to_daemon 判断）
     import atexit
     def cleanup():
         # 已交棒给后台守护（成功路径）→ 什么都不做，让 FGO 继续走代理、不断线
@@ -1046,7 +1058,7 @@ def main():
             ready_msg = (
                 f"✓ 抓包环境已就绪\n"
                 f"（代理 {ip}:{PORT}）\n\n"
-                f"👉 现在启动 FGO，到登录页点【登录】"
+                f"👉 FGO 即将启动，脚本会自动帮你点【登录】"
             )
             set_phase(ready_msg)
             print(f"[5/5] 代理已设置: {proxy}")
@@ -1210,7 +1222,7 @@ def main():
             set_phase(
                 f"🔄 FGO 已自动启动\n"
                 f"（代理 {state.get('ip','?')}:{PORT}）\n\n"
-                f"👉 等待 FGO 进入登录页，点【登录】"
+                f"👉 FGO 已启动，脚本自动点击登录中…"
             )
             print("[*] FGO 已自动启动，等待登录页", flush=True)
         except Exception as e:
