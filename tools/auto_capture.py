@@ -262,7 +262,8 @@ def load_autotap_config():
     实测：脚本启动 mitmdump→FGO 首次联网约 13s，联网→toplogin 落地约 27s，
     单次完整约 40s，故 90s 留足 2 倍余量。
     """
-    cfg = {"auto_tap": True, "tap_interval": 1.5, "tap_timeout": 90}
+    cfg = {"auto_tap": True, "tap_interval": 1.5, "tap_timeout": 90,
+           "tap_x": None, "tap_y": None}
     try:
         if not CONFIG_FILE.is_file():
             return cfg
@@ -284,24 +285,40 @@ def load_autotap_config():
                     cfg["tap_timeout"] = int(float(v))
                 except Exception:
                     pass
+            elif k == "tap_x":
+                try:
+                    cfg["tap_x"] = int(float(v))
+                except Exception:
+                    pass
+            elif k == "tap_y":
+                try:
+                    cfg["tap_y"] = int(float(v))
+                except Exception:
+                    pass
     except Exception:
         pass
     return cfg
 
 
-def auto_tap_worker(adb, serial, interval, duration, stop_flag):
-    """FGO 启动后定时点击屏幕正中央，帮用户自动点登录。
+def auto_tap_worker(adb, serial, interval, duration, stop_flag,
+                    tap_x=None, tap_y=None):
+    """FGO 启动后定时点击屏幕正中央（或 config 指定的坐标），帮用户自动点登录。
 
     stop_flag: dict，主流程抓到 toplogin 后置 {"done": True} 让本线程退出。
+    tap_x / tap_y: config.ini 指定的绝对坐标；为 None 时自动按分辨率算中心点
+                   （改分辨率无需改代码）。
     """
     try:
-        size_out = adb_shell(adb, ["shell", "wm", "size"], serial, timeout=15)
-        m = re.search(r"(\d+)\s*x\s*(\d+)", size_out)
-        if m:
-            w, h = int(m.group(1)), int(m.group(2))
+        if tap_x is not None and tap_y is not None:
+            cx, cy = int(tap_x), int(tap_y)
         else:
-            w, h = 720, 1280
-        cx, cy = w // 2, h // 2
+            size_out = adb_shell(adb, ["shell", "wm", "size"], serial, timeout=15)
+            m = re.search(r"(\d+)\s*x\s*(\d+)", size_out)
+            if m:
+                w, h = int(m.group(1)), int(m.group(2))
+            else:
+                w, h = 720, 1280
+            cx, cy = w // 2, h // 2
         print(f"[*] 自动点击已启动：每 {interval}s 点屏幕中央 ({cx},{cy})，"
               f"最多 {duration}s", flush=True)
         deadline = time.time() + duration
@@ -1211,7 +1228,8 @@ def main():
         threading.Thread(
             target=auto_tap_worker,
             args=(adb2, serial2, tap_cfg["tap_interval"],
-                  tap_cfg["tap_timeout"], tap_stop),
+                  tap_cfg["tap_timeout"], tap_stop,
+                  tap_cfg.get("tap_x"), tap_cfg.get("tap_y")),
             daemon=True,
         ).start()
 
