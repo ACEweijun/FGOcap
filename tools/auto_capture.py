@@ -251,6 +251,69 @@ def load_package_override():
     return None
 
 
+def load_autotap_config():
+    """从 tools/config.ini 读取自动点击登录配置（可选）。
+
+    config.ini 示例：
+        auto_tap=1            # 1=开启自动点击登录（默认），0=关闭（自己手点）
+        tap_interval=1.5      # 点击间隔（秒，默认 1.5）
+        tap_timeout=90        # 持续多久没抓到就结束（秒，默认 90）
+
+    实测：脚本启动 mitmdump→FGO 首次联网约 13s，联网→toplogin 落地约 27s，
+    单次完整约 40s，故 90s 留足 2 倍余量。
+    """
+    cfg = {"auto_tap": True, "tap_interval": 1.5, "tap_timeout": 90}
+    try:
+        if not CONFIG_FILE.is_file():
+            return cfg
+        for line in CONFIG_FILE.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = line.strip()
+            if not line or line.startswith(("#", ";")) or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k, v = k.strip().lower(), v.strip()
+            if k == "auto_tap":
+                cfg["auto_tap"] = v not in ("0", "false", "no", "off")
+            elif k == "tap_interval":
+                try:
+                    cfg["tap_interval"] = float(v)
+                except Exception:
+                    pass
+            elif k == "tap_timeout":
+                try:
+                    cfg["tap_timeout"] = int(float(v))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return cfg
+
+
+def auto_tap_worker(adb, serial, interval, duration, stop_flag):
+    """FGO 启动后定时点击屏幕正中央，帮用户自动点登录。
+
+    stop_flag: dict，主流程抓到 toplogin 后置 {"done": True} 让本线程退出。
+    """
+    try:
+        size_out = adb_shell(adb, ["shell", "wm", "size"], serial, timeout=15)
+        m = re.search(r"(\d+)\s*x\s*(\d+)", size_out)
+        if m:
+            w, h = int(m.group(1)), int(m.group(2))
+        else:
+            w, h = 720, 1280
+        cx, cy = w // 2, h // 2
+        print(f"[*] 自动点击已启动：每 {interval}s 点屏幕中央 ({cx},{cy})，"
+              f"最多 {duration}s", flush=True)
+        deadline = time.time() + duration
+        while time.time() < deadline and not stop_flag.get("done"):
+            adb_shell(adb, ["shell", "input", "tap", str(cx), str(cy)],
+                      serial, timeout=10)
+            time.sleep(interval)
+        print("[*] 自动点击已停止", flush=True)
+    except Exception as e:
+        print(f"[!] 自动点击异常：{e}", flush=True)
+
+
 def detect_fgo_packages(adb, serial):
     """列出模拟器里已安装的 FGO 相关包名（按 fate / fgo 关键词匹配）。"""
     out = adb_shell(adb, ["pm", "list", "packages"], serial, timeout=30)
@@ -1141,11 +1204,25 @@ def main():
     # 给 FGO 几秒时间开始启动（用户操作无需等这个 sleep）
     time.sleep(3)
 
+    # ===== 2.6 自动点击登录（默认开启，config.ini 可关）=====
+    tap_cfg = load_autotap_config()
+    tap_stop = {"done": False}
+    if tap_cfg["auto_tap"] and adb2 and serial2:
+        threading.Thread(
+            target=auto_tap_worker,
+            args=(adb2, serial2, tap_cfg["tap_interval"],
+                  tap_cfg["tap_timeout"], tap_stop),
+            daemon=True,
+        ).start()
+
     # ===== 3. 抓包轮询（复用前置弹窗，绝不再开第二个）=====
     print()
-    print("✓ 脚本会自动启动 FGO；等你到登录页点【登录】即可。")
-    print("  脚本会在后台静默等待，检测到登录数据后自动完成。")
-    print("  等待期间无需任何操作，cmd 窗口显示实时进度。")
+    if tap_cfg["auto_tap"]:
+        print("✓ 脚本已启动 FGO，并会自动点击屏幕中央帮你点【登录】。")
+        print(f"  每 {tap_cfg['tap_interval']}s 点一次，{tap_cfg['tap_timeout']}s 内没抓到就自动结束。")
+    else:
+        print("✓ 脚本会自动启动 FGO；等你到登录页点【登录】即可。")
+    print("  检测到登录数据后自动完成，cmd 窗口显示实时进度。")
     print()
 
     existing = set()
@@ -1163,15 +1240,19 @@ def main():
         candidate = new[0]
         if candidate.stat().st_size < 1 * 1024 * 1024:
             return None
+        tap_stop["done"] = True  # 抓到了 → 停掉自动点击
         return candidate
 
     # 复用 main() 前置启动的 popup（不再开第二个弹窗）
     proxy_ip = state.get("ip") or get_lan_ip() or "?"
     proxy_str = f"{proxy_ip}:{PORT}"
+    # 自动点击开启时，超时=点击窗口（没抓到就结束脚本，不再干等 600s）
+    wait_timeout = tap_cfg["tap_timeout"] if tap_cfg["auto_tap"] else 600
     cancelled, found = wait_for_capture(
         check_new_file, popup, signal_file,
-        proxy_str=proxy_str, port=PORT, timeout=600,
+        proxy_str=proxy_str, port=PORT, timeout=wait_timeout,
     )
+    tap_stop["done"] = True  # 无论成功/超时，都停掉自动点击
 
     # ===== 4. 清理 + 结果 =====
     # 【2026-09-07 优雅方案】成功路径：不删代理、不杀 mitmdump、不动 FGO，
