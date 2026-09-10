@@ -11,3 +11,14 @@
 #   adb shell pm list packages | findstr -i fate
 #
 package=
+
+# ---- 自动点击登录（可选）----
+# 开启后，脚本启动 FGO 会自动点击「屏幕正中央」帮你点【登录】，
+# 抓到 toplogin 立即停止；超时没抓到则结束脚本（不再干等）。
+#
+# 实测耗时参考：脚本启动→FGO 首次联网约 13s，联网→toplogin 落地约 27s，
+# 单次完整约 40s，故默认 90s 留足余量。
+#
+# auto_tap=1           # 1=开启（默认），0=关闭（自己手点登录）
+# tap_interval=1.5     # 点击间隔（秒）
+# tap_timeout=90       # 持续多久没抓到就结束（秒）
