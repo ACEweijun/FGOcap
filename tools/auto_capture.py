@@ -93,9 +93,12 @@ def _get_mitmdump_cmd():
     return _MITMDUMP_CMD
 
 # 雷电安装路径（自动探测）
-# 兜底硬编码（find_adb() 会先用 glob 匹配 G:\leidian\LDPlayer*\adb.exe，
+# 兜底硬编码（find_adb() 会先按盘符 glob <盘>:\leidian\ 与 <盘>:\software\leidian\，
 # 覆盖雷电 9/12/13/14/15+ 任意版本；这里只是 glob 失效时的备用）
 LDPLAYER_PATHS = [
+    r"D:\software\leidian\LDPlayer9\adb.exe",
+    r"D:\software\leidian\LDPlayer14\adb.exe",
+    r"D:\software\leidian\LDPlayer12\adb.exe",
     r"G:\leidian\LDPlayer14\adb.exe",
     r"G:\leidian\LDPlayer12\adb.exe",
     r"G:\leidian\LDPlayer9\adb.exe",
@@ -163,13 +166,21 @@ def ask(text):
 # ---------------------------------------------------------------------------
 def find_adb():
     """探测模拟器 adb 路径，返回第一个存在的。"""
-    # 雷电：通配 G:\leidian\LDPlayer*\adb.exe（兼容 LDPlayer9/12/13/14/15 等任意版本号）
-    # glob 默认字典序，LDPlayer1*/LDPlayer20 会优先于 LDPlayer9；
-    # 绝大多数情况只装一个，命中即返回
-    for adb in sorted(glob.glob(r"G:\leidian\LDPlayer*\adb.exe")):
-        if os.path.isfile(adb):
-            return adb
-    # 兜底：硬编码路径（MuMu/Nox 等非雷电模拟器 + 雷电装在 C/D 等其他盘符）
+    # 【2026-09-13 扩展】重装系统后雷电安装盘符/路径会变（实测 G:\leidian →
+    # D:\software\leidian），因此按盘符扫两级常见位置：
+    #   <盘>:\leidian\LDPlayer*\adb.exe 与 <盘>:\software\leidian\LDPlayer*\adb.exe
+    # glob 默认字典序，绝大多数情况只装一个，命中即返回
+    patterns = []
+    for drv in "CDEFGH":
+        patterns += [
+            rf"{drv}:\leidian\LDPlayer*\adb.exe",
+            rf"{drv}:\software\leidian\LDPlayer*\adb.exe",
+        ]
+    for pat in patterns:
+        for adb in sorted(glob.glob(pat)):
+            if os.path.isfile(adb):
+                return adb
+    # 兜底：硬编码路径（MuMu/Nox 等非雷电模拟器 + 雷电装在其他非常见目录）
     for p in LDPLAYER_PATHS:
         if os.path.isfile(p):
             return p
@@ -552,7 +563,12 @@ def ensure_mitm_ca(adb, serial):
         f"/apex/com.android.conscrypt/cacerts/{name} 2>/dev/null; "
         f"rm -f {tmp}"
     )
-    adb_shell(adb, ["shell", "su", "-c", script], serial, timeout=30)
+    # 【2026-09-13 修复 su 引号 bug】旧写法 adb_shell(..., ["shell", "su", "-c", script])
+    # 经 adb 拼接后设备端收到 `su -c mount -o rw,remount / ...`，su 的 getopt 只把
+    # `mount` 当 -c 参数，后面的 `-o` 被当成 su 自身选项 → "su: invalid option -- o"，
+    # 整条 root 写入静默失败（雷电 9 实测复现）。
+    # 修复：整段命令包进单引号作为一个参数下发（script 内不含单引号，安全）。
+    adb_shell(adb, ["shell", f"su -c '{script}'"], serial, timeout=30)
     if emulator_has_ca(adb, serial, name):
         return True, f"mitmproxy CA 已安装到模拟器系统证书库（{name}）"
     return False, f"CA 写入模拟器失败（{name}）：请确认模拟器已开 root（多开管理器→设置→ROOT权限）"
