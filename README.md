@@ -99,6 +99,8 @@ FGOcap/
 **Quicker**：「运行或打开」步骤直接指向 `tools\一键抓包.bat`（参数留空，勾「失败后停止」）。
 脚本内部会等待模拟器就绪（最多 2 分钟），可与「启动模拟器」步骤并行。
 
+> ⚠️ **工程放在网络映射盘（NAS）上时**：Quicker 以管理员身份运行的话，`net use X:` 建的盘符在**提权会话里不存在** → 找不到 bat，Quicker 静默什么都不做。见「常见问题」里那两条。
+
 ## 配置
 
 包名**自动探测**（列出含 `fate`/`fgo` 的包 → 按候选表挑 → 自动查 launcher activity），一般不用管。
@@ -128,6 +130,8 @@ package=com.bilibili.fgo.qihoo
 | 弹「未找到 mitmdump 可执行文件」 | 未装 mitmproxy：`pip install mitmproxy`；装完重开终端 |
 | 模拟器上不了网 | 代理残留：执行 `adb shell settings delete global http_proxy` + 删除 `global_http_proxy_host` / `global_http_proxy_port`。**严禁用 `settings put global http_proxy :0`**（空值会让 FGO 直连 443，抓不到包） |
 | mitmdump 启动失败 | `pip install mitmproxy`，确认 `mitmdump --version` 可运行 |
+| **窗口刷屏「'xxx' 不是内部或外部命令，也不是可运行的程序或批处理文件」** | `一键抓包.bat` 被编辑器存成了 **LF 换行**（Unix）。cmd.exe 的批处理解析器只认 **CRLF**，LF 会把行切错、`goto` / `for` 全部失效，于是每一行都报这个错。修复：换行符改回 CRLF——VS Code 右下角把 `LF` 切成 `CRLF`，或 `python -c "p=r'tools/一键抓包.bat';d=open(p,'rb').read().replace(b'\r\n',b'\n').replace(b'\n',b'\r\n');open(p,'wb').write(d)"`。**改动 `tools/一键抓包.bat` 后务必确认它仍是 CRLF** |
+| **Quicker 触发毫无反应（连 cmd 窗口都不出现）** | 工程在映射盘（如 `X:\`）上、而 Quicker 以**管理员身份**运行时：`net use` 建的盘符只属于非提权会话，提权上下文里 `X:` 根本不存在，ShellExecute 找不到文件 → 静默失败、Quicker 也不报错。两条路：① 放一个**本地启动器** `FGOcap_launch.cmd`（放在本地盘，Quicker 第 1 步指向它）：先 `if not exist` 判断目标，缺失就自己 `net use X: \\nas\share`，再 `call` 真正的 bat，并把每次运行写进日志，便于事后定位；② 导入 `EnableLinkedConnections=1`（`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System`，DWORD）后**重启**，让映射盘对提权进程可见，之后 Quicker 可直连 `X:\...` |
 
 ## 风险提示
 
