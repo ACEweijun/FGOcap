@@ -1318,11 +1318,22 @@ def main():
         if not new:
             return None
         new.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-        candidate = new[0]
-        if candidate.stat().st_size < 1 * 1024 * 1024:
-            return None
-        tap_stop["done"] = True  # 抓到了 → 停掉自动点击
-        return candidate
+        # 【P0-2】JSON 合法性校验：必须能解析且含 response 字段，
+        # 否则视为写入未完成/半截文件（addon 原子写入后必满足），继续等待。
+        for candidate in new:
+            if candidate.stat().st_size < 1 * 1024 * 1024:
+                continue
+            try:
+                import json as _json
+                _data = _json.loads(
+                    candidate.read_text(encoding="utf-8", errors="replace")
+                )
+                if isinstance(_data, dict) and "response" in _data:
+                    tap_stop["done"] = True  # 抓到了 → 停掉自动点击
+                    return candidate
+            except Exception:
+                continue
+        return None
 
     # 复用 main() 前置启动的 popup（不再开第二个弹窗）
     proxy_ip = state.get("ip") or get_lan_ip() or "?"
@@ -1400,8 +1411,11 @@ def main():
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         copied = (proc.returncode == 0)
-    except Exception:
-        pass
+    except Exception as e:
+        # 【P0-3】剪贴板失败不静默：写日志，弹窗改走文件导入
+        print(f"[!] 剪贴板复制失败：{e}", flush=True)
+    if not copied:
+        print("[!] 剪贴板复制失败（clip 不可用？），请用 Chaldea 文件导入", flush=True)
 
     try:
         subprocess.Popen(
@@ -1417,10 +1431,15 @@ def main():
         daemon_py = TOOLS_DIR / "_cleanup_daemon.py"
         if daemon_py.is_file() and _adb and _serial:
             # 先清掉旧守护，避免多次抓包叠加多个守护
+            # 【P0-1】wmic 已弃用 → PowerShell Get-CimInstance 按命令行匹配后 Stop-Process
+            ps_kill_daemons = (
+                "Get-CimInstance Win32_Process | "
+                "Where-Object { $_.CommandLine -like '*_cleanup_daemon.py*' } | "
+                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+            )
             subprocess.run(
-                'wmic process where "name like \'%%python%%\' and commandline '
-                'like \'%%_cleanup_daemon.py%%\'" delete 2>nul',
-                shell=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW,
+                ["powershell", "-NoProfile", "-Command", ps_kill_daemons],
+                timeout=15, creationflags=subprocess.CREATE_NO_WINDOW,
             )
             subprocess.Popen(
                 [pythonw, str(daemon_py), _adb, _serial, _pkg, str(PORT)],
@@ -1446,8 +1465,8 @@ def main():
         )
     else:
         hint = (
-            "已自动打开文件所在文件夹。\n\n"
-            "在 Chaldea 里：\n"
+            "⚠️ 剪贴板复制失败，已打开文件夹。\n\n"
+            "请用 Chaldea 文件导入：\n"
             "  1. 进入【导入 → Https抓包】\n"
             "  2. 选好要导入的账号\n"
             "  3. 点击【导入】按钮 → 选【从文件】→ 选择这个 json"

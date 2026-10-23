@@ -49,10 +49,22 @@ def main():
                "settings delete global global_http_proxy_host; "
                "settings delete global global_http_proxy_port")
 
-    # 2) 停 mitmdump（含其父进程/子进程）
+    # 2) 停 mitmdump：netstat -ano 按端口找 PID 精确清理（wmic 已弃用，/IM 全杀易误伤）
     try:
-        subprocess.run("taskkill /F /IM mitmdump.exe /T 2>nul",
-                       shell=True, timeout=20, creationflags=CREATE_NO_WINDOW)
+        r = subprocess.run(["netstat", "-ano"], capture_output=True, text=True,
+                           timeout=20, creationflags=CREATE_NO_WINDOW)
+        pids = set()
+        for line in (r.stdout or "").splitlines():
+            if f":{port} " in line and "LISTENING" in line:
+                parts = line.split()
+                if parts:
+                    pids.add(parts[-1])
+        for pid in pids:
+            try:
+                subprocess.run(["taskkill", "/F", "/PID", pid, "/T"],
+                               timeout=10, creationflags=CREATE_NO_WINDOW)
+            except Exception:
+                pass
     except Exception:
         pass
 
