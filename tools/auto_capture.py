@@ -1235,7 +1235,7 @@ def main():
                 print("[!] resolve-activity 失败，退回 monkey 启动", flush=True)
                 adb_shell(
                     adb2,
-                    ["shell", "monkey", "-p", fgo_pkg,
+                    ["monkey", "-p", fgo_pkg,
                      "-c", "android.intent.category.LAUNCHER", "1"],
                     serial2,
                     timeout=30,
@@ -1245,7 +1245,7 @@ def main():
                 print(f"[*] launcher: {launcher}", flush=True)
                 start_out = adb_shell(
                     adb2,
-                    ["shell", "am", "start", "-n", launcher],
+                    ["am", "start", "-n", launcher],
                     serial2,
                     timeout=15,
                 )
