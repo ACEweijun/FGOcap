@@ -33,7 +33,7 @@ FGO (模拟器内) ──HTTPS──→ Android 系统代理 ──→ mitmdump 
 | Windows | 10 / 11 |
 | 模拟器 | 雷电 9 / 12 / 14（已验证），**必须开启 root** |
 | FGO | 国服 360 渠道服 `com.bilibili.fgo.qihoo`（其他渠道见配置） |
-| Python | 3.10+（安装时务必勾选 **Add to PATH**） |
+| Python | 3.11+（安装时务必勾选 **Add to PATH**） |
 | mitmproxy | `pip install mitmproxy` |
 | Chaldea | 用于导入抓包数据 |
 

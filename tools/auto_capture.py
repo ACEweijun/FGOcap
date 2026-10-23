@@ -22,6 +22,7 @@ FGO 国服一键抓包（自动版）
 用法：双击「一键抓包.bat」或用 Quicker 运行它。任何一步失败都会弹窗说明原因。
 """
 
+import configparser
 import ctypes
 import glob
 import hashlib
@@ -49,6 +50,19 @@ TOOLS_DIR = Path(__file__).resolve().parent          # tools 目录
 ADDON = TOOLS_DIR / "fgoaddon.py"
 TOPLOGIN_DIR = TOOLS_DIR / "toplogin"
 PORT = 18080
+RUN_LOG = TOOLS_DIR / "run.log"
+
+
+def log_exc(msg="", exc=None):
+    """统一异常日志：追加写入 tools/run.log（【P2-13】替换静默 except）。"""
+    try:
+        with open(RUN_LOG, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+            if exc is not None:
+                import traceback
+                f.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+    except Exception:
+        pass
 
 
 def resolve_mitmdump():
@@ -128,7 +142,6 @@ CONFIG_FILE = TOOLS_DIR / "config.ini"    # 可选：装了多个 FGO 时在这�
 # 弹窗工具
 # ---------------------------------------------------------------------------
 MB_OK = 0x00000000
-MB_YESNO = 0x00000004
 MB_ICONINFO = 0x00000040
 MB_ICONWARN = 0x00000030
 MB_ICONERR = 0x00000010
@@ -151,14 +164,6 @@ def warn(text):
 
 def error(text):
     msg(text, style=MB_OK | MB_ICONERR | MB_SYSTEMMODAL | MB_TOPMOST)
-
-
-def ask(text):
-    """弹窗询问是/否，返回 True/False。"""
-    r = ctypes.windll.user32.MessageBoxW(
-        None, text, "FGO 一键抓包", MB_YESNO | MB_ICONWARN | MB_SYSTEMMODAL | MB_TOPMOST
-    )
-    return r == 6  # IDYES
 
 
 # ---------------------------------------------------------------------------
@@ -197,19 +202,12 @@ def find_adb():
 def adb_shell(adb, args, serial=None, timeout=60):
     """调用 adb shell 执行一条命令。
 
-    【bug fix 2026-08-31】去掉调用方传 'shell' 前缀的冗余：
-    老代码 adb_shell(adb, ["shell", "am", "start", ...]) 在函数内部追加 ["shell"]
-    后变成 `adb -s X shell shell am start ...`，目标 shell 报 `shell: not found`，
-    force-stop / am start / pidof 全部失效。
-    兼容：自动剥离 args 第一个元素如果是 "shell"，这样历史调用不会报错。
+    【P1-7】调用方统一不再传 'shell' 前缀（历史曾出现 `shell shell` 冗余，
+    旧版用自动剥离兼容；现已清理全部调用点，剥离分支删除）。
     """
     cmd = [adb]
     if serial:
         cmd += ["-s", serial]
-    # 自动去冗余的 "shell" 前缀（旧调用兼容）
-    args = list(args)
-    if args and args[0] == "shell":
-        args = args[1:]
     cmd += ["shell"] + args
     try:
         r = subprocess.run(
@@ -225,6 +223,54 @@ def adb_shell(adb, args, serial=None, timeout=60):
         return out.decode("utf-8", errors="replace").strip()
     except Exception:
         return ""
+
+
+def clear_proxy(adb, serial):
+    """【P1-5 公共函数】删除模拟器全局代理三条 key（老 API + 新 API）。
+
+    严禁用 `settings put global http_proxy :0` 清空（历史回归令 FGO 直连 443），
+    只允许 delete 彻底清除。
+    """
+    adb_shell(adb, ["settings", "delete", "global", "http_proxy"],
+              serial, timeout=15)
+    adb_shell(adb, ["settings", "delete", "global", "global_http_proxy_host"],
+              serial, timeout=15)
+    adb_shell(adb, ["settings", "delete", "global", "global_http_proxy_port"],
+              serial, timeout=15)
+
+
+def set_proxy(adb, serial, ip, port):
+    """【P1-6 公共函数】设置模拟器全局代理三条 key（老 API + 新 API 双写）。"""
+    adb_shell(adb, ["settings", "put", "global", "http_proxy", f"{ip}:{port}"],
+              serial, timeout=15)
+    adb_shell(adb, ["settings", "put", "global", "global_http_proxy_host", ip],
+              serial, timeout=15)
+    adb_shell(adb, ["settings", "put", "global", "global_http_proxy_port", str(port)],
+              serial, timeout=15)
+
+
+def _kill_by_port(port):
+    """【P1-10】netstat -ano 按端口找 LISTENING PID，taskkill /PID /T 精确清理。
+
+    替代 taskkill /IM mitmdump.exe：/IM 全杀会误伤其它同名进程。
+    """
+    try:
+        r = subprocess.run(["netstat", "-ano"], capture_output=True, text=True,
+                           timeout=20, creationflags=subprocess.CREATE_NO_WINDOW)
+        pids = set()
+        for line in (r.stdout or "").splitlines():
+            if f":{port} " in line and "LISTENING" in line:
+                parts = line.split()
+                if parts:
+                    pids.add(parts[-1])
+        for pid in pids:
+            try:
+                subprocess.run(["taskkill", "/F", "/PID", pid, "/T"],
+                               timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def find_serial(adb):
@@ -256,21 +302,18 @@ def load_package_override():
 
     config.ini 示例（装了多个 FGO 时用）：
         package=com.bilibili.fgo.qihoo
+    【P2-13】由手写行解析改为 configparser（兼容无 section 的键值风格）。
     """
     try:
         if not CONFIG_FILE.is_file():
             return None
-        for line in CONFIG_FILE.read_text(encoding="utf-8", errors="ignore").splitlines():
-            line = line.strip()
-            if not line or line.startswith(("#", ";")):
-                continue
-            if line.lower().startswith("package"):
-                val = line.split("=", 1)[1].strip()
-                if val:
-                    return val
-    except Exception:
-        pass
-    return None
+        cp = configparser.ConfigParser()
+        cp.read_string("[DEFAULT]\n" + CONFIG_FILE.read_text(encoding="utf-8", errors="ignore"))
+        val = cp.get("DEFAULT", "package", fallback="").strip()
+        return val or None
+    except Exception as e:
+        log_exc("load_package_override 解析 config.ini 失败", e)
+        return None
 
 
 def load_autotap_config():
@@ -289,38 +332,24 @@ def load_autotap_config():
     try:
         if not CONFIG_FILE.is_file():
             return cfg
-        for line in CONFIG_FILE.read_text(encoding="utf-8", errors="ignore").splitlines():
-            line = line.strip()
-            if not line or line.startswith(("#", ";")) or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            k, v = k.strip().lower(), v.strip()
-            if k == "auto_tap":
-                cfg["auto_tap"] = v not in ("0", "false", "no", "off")
-            elif k == "tap_interval":
-                try:
-                    cfg["tap_interval"] = float(v)
-                except Exception:
-                    pass
-            elif k == "tap_timeout":
-                try:
-                    cfg["tap_timeout"] = int(float(v))
-                except Exception:
-                    pass
-            elif k == "tap_x":
-                try:
-                    cfg["tap_x"] = int(float(v))
-                except Exception:
-                    pass
-            elif k == "tap_y":
-                try:
-                    cfg["tap_y"] = int(float(v))
-                except Exception:
-                    pass
-            elif k == "status_popup":
-                cfg["status_popup"] = v not in ("0", "false", "no", "off")
-    except Exception:
-        pass
+        cp = configparser.ConfigParser()
+        cp.read_string("[DEFAULT]\n" + CONFIG_FILE.read_text(encoding="utf-8", errors="ignore"))
+        cfg["auto_tap"] = cp.getboolean("DEFAULT", "auto_tap", fallback=True)
+        cfg["tap_interval"] = cp.getfloat("DEFAULT", "tap_interval", fallback=1.5)
+        cfg["tap_timeout"] = cp.getint("DEFAULT", "tap_timeout", fallback=90)
+        if cp.has_option("DEFAULT", "tap_x"):
+            try:
+                cfg["tap_x"] = int(cp.getfloat("DEFAULT", "tap_x"))
+            except Exception:
+                pass
+        if cp.has_option("DEFAULT", "tap_y"):
+            try:
+                cfg["tap_y"] = int(cp.getfloat("DEFAULT", "tap_y"))
+            except Exception:
+                pass
+        cfg["status_popup"] = cp.getboolean("DEFAULT", "status_popup", fallback=True)
+    except Exception as e:
+        log_exc("load_autotap_config 解析 config.ini 失败", e)
     return cfg
 
 
@@ -336,7 +365,7 @@ def auto_tap_worker(adb, serial, interval, duration, stop_flag,
         if tap_x is not None and tap_y is not None:
             cx, cy = int(tap_x), int(tap_y)
         else:
-            size_out = adb_shell(adb, ["shell", "wm", "size"], serial, timeout=15)
+            size_out = adb_shell(adb, ["wm", "size"], serial, timeout=15)
             m = re.search(r"(\d+)\s*x\s*(\d+)", size_out)
             if m:
                 w, h = int(m.group(1)), int(m.group(2))
@@ -347,7 +376,7 @@ def auto_tap_worker(adb, serial, interval, duration, stop_flag,
               f"最多 {duration}s", flush=True)
         deadline = time.time() + duration
         while time.time() < deadline and not stop_flag.get("done"):
-            adb_shell(adb, ["shell", "input", "tap", str(cx), str(cy)],
+            adb_shell(adb, ["input", "tap", str(cx), str(cy)],
                       serial, timeout=10)
             time.sleep(interval)
         print("[*] 自动点击已停止", flush=True)
@@ -466,7 +495,7 @@ def verify_proxy_ready(adb, serial, ip, port):
         return False, False, f"http_proxy 读回 {cur!r}，期望 {ip}:{port}（写入未生效）"
     # 2) 模拟器 -> 主机连通性（ICMP，仅诊断，不阻断）
     try:
-        out = adb_shell(adb, ["shell", f"ping -c 2 -W 2 {ip}"], serial, timeout=20)
+        out = adb_shell(adb, [f"ping -c 2 -W 2 {ip}"], serial, timeout=20)
         low = out.lower()
         if "ttl=" not in low and "received" not in low:
             return True, False, f"ping {ip} 无输出（Windows 防火墙常拦 ICMP，TCP 走代理不受影响）"
@@ -522,7 +551,7 @@ def mitm_ca_path():
 def emulator_has_ca(adb, serial, name):
     """模拟器系统证书库（APEX / legacy 任一）已含目标 CA？"""
     for d in ("/apex/com.android.conscrypt/cacerts", "/system/etc/security/cacerts"):
-        out = adb_shell(adb, ["shell", f"ls {d}/{name}"], serial, timeout=10).strip()
+        out = adb_shell(adb, [f"ls {d}/{name}"], serial, timeout=10).strip()
         if out and "No such" not in out and "not found" not in out and "No such file" not in out:
             return True
     return False
@@ -570,7 +599,7 @@ def ensure_mitm_ca(adb, serial):
     # `mount` 当 -c 参数，后面的 `-o` 被当成 su 自身选项 → "su: invalid option -- o"，
     # 整条 root 写入静默失败（雷电 9 实测复现）。
     # 修复：整段命令包进单引号作为一个参数下发（script 内不含单引号，安全）。
-    adb_shell(adb, ["shell", f"su -c '{script}'"], serial, timeout=30)
+    adb_shell(adb, [f"su -c '{script}'"], serial, timeout=30)
     if emulator_has_ca(adb, serial, name):
         return True, f"mitmproxy CA 已安装到模拟器系统证书库（{name}）"
     return False, f"CA 写入模拟器失败（{name}）：请确认模拟器已开 root（多开管理器→设置→ROOT权限）"
@@ -590,26 +619,31 @@ def adb_restart_server(adb, timeout=30):
 
 
 def kill_stale_mitmdump():
-    """启动前清理残留的 mitmdump.exe（包括其父进程 pythonw），防止 18080 端口被旧实例占用。
+    """启动前清理残留 mitmdump。
 
-    Git Bash 下 `/F /IM` 会被当作路径转换，所以用 shell=True 走 cmd 直接执行。
+    【P1-10】优先 netstat -ano 按 18080 端口 PID 精确清理（不误伤同名进程）；
+    兜底 PowerShell 按命令行匹配 mitmdump 的进程；残留弹窗（pythonw
+    wait_popup_win32.py）也按命令行精确匹配清理（不再用 WINDOWTITLE eq FGO* 模糊匹配）。
     """
+    _kill_by_port(PORT)
     try:
-        # 先杀所有 mitmdump 进程（递归杀子进程）
-        subprocess.run(
-            "taskkill /F /IM mitmdump.exe /T 2>nul",
-            shell=True, timeout=15,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+        ps_kill_mitm = (
+            "Get-CimInstance Win32_Process | "
+            "Where-Object { $_.CommandLine -like '*mitmdump*' } | "
+            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
         )
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps_kill_mitm],
+                       timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
     except Exception:
         pass
     try:
-        # 顺手把残留的 pythonw 父进程也清了（脚本退出后可能没被回收）
-        subprocess.run(
-            "taskkill /F /IM pythonw.exe /FI \"WINDOWTITLE eq FGO*\" /T 2>nul",
-            shell=True, timeout=10,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+        ps_kill_popup = (
+            "Get-CimInstance Win32_Process | "
+            "Where-Object { $_.CommandLine -like '*wait_popup_win32.py*' } | "
+            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
         )
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps_kill_popup],
+                       timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
     except Exception:
         pass
     # 等 taskkill 在系统层面真的回收完端口（Windows 上 taskkill 返回后进程未必立即释放端口）
@@ -697,7 +731,7 @@ def start_mitmdump():
     return proc2, False, log_text2 or log_text
 
 
-def wait_for_capture(check_fn, popup, signal_file, proxy_str, port,
+def wait_for_capture(check_fn, popup, signal_file, proxy_str,
                      timeout=600, title="FGO 一键抓包"):
     """复用 main() 已经启动的 popup 进程等待抓包数据，不再 spawn 第二个弹窗。
 
@@ -911,9 +945,9 @@ def main():
             # 2a) 先停 FGO——清代理会切断其游戏连接（"与服务器连接中断"）
             try:
                 _pkg = state.get("fgo_package") or FGO_PACKAGE
-                _pid = adb_shell(adb, ["shell", "pidof", _pkg], serial).strip()
+                _pid = adb_shell(adb, ["pidof", _pkg], serial).strip()
                 if _pid:
-                    adb_shell(adb, ["shell", "am", "force-stop", _pkg], serial)
+                    adb_shell(adb, ["am", "force-stop", _pkg], serial)
                     time.sleep(1)
             except Exception:
                 pass
@@ -921,14 +955,7 @@ def main():
             # 否则残留 global_http_proxy_host/port 会让模拟器断网。
             # ⚠️ 严禁用 `:0` 清空（历史回归会令 FGO 直连 443 → 抓不到包），
             # 用 delete 彻底清除。
-            adb_shell(
-                adb,
-                ["shell",
-                 "settings delete global http_proxy; "
-                 "settings delete global global_http_proxy_host; "
-                 "settings delete global global_http_proxy_port"],
-                serial,
-            )
+            clear_proxy(adb, serial)
         p = state.get("mitm_proc")
         if p:
             try:
@@ -994,14 +1021,7 @@ def main():
             # 历史回归：`:0` 会让 FGO/Unity 读老 API 拿到空代理 → 直连 443 →
             # mitmdump 0 流量 → 永远抓不到 toplogin（"抓取没反应"）。
             # 正确做法：直接 delete 三条 key，彻底清除不留危险值，[5/5] 再重设正确值。
-            adb_shell(
-                adb,
-                ["shell",
-                 "settings delete global http_proxy; "
-                 "settings delete global global_http_proxy_host; "
-                 "settings delete global global_http_proxy_port"],
-                serial,
-            )
+            clear_proxy(adb, serial)
 
             set_phase("[4/5] 启动抓包服务…")
             # 无条件重启：端口被旧实例占用时若沿用旧进程，旧实例的日志句柄
@@ -1048,14 +1068,7 @@ def main():
             verified = False
             last_reason = ""
             for attempt in range(1, 4):
-                adb_shell(
-                    adb,
-                    ["shell",
-                     f"settings put global http_proxy {ip}:{PORT}; "
-                     f"settings put global global_http_proxy_host {ip}; "
-                     f"settings put global global_http_proxy_port {PORT}"],
-                    serial,
-                )
+                set_proxy(adb, serial, ip, PORT)
                 time.sleep(2)  # ConnectivityService 监听 settings 变更生效
                 v_ok, i_ok, last_reason = verify_proxy_ready(adb, serial, ip, PORT)
                 if v_ok:
@@ -1201,14 +1214,7 @@ def main():
             _cur = adb_shell(adb2, ["settings", "get", "global", "http_proxy"], serial2).strip()
             if _cur != _expected:
                 print(f"[!] 启动 FGO 前代理读回 {_cur!r} ≠ 期望 {_expected}，重新写入…", flush=True)
-                adb_shell(
-                    adb2,
-                    ["shell",
-                     f"settings put global http_proxy {_expected}; "
-                     f"settings put global global_http_proxy_host {_pip}; "
-                     f"settings put global global_http_proxy_port {PORT}"],
-                    serial2,
-                )
+                set_proxy(adb2, serial2, _pip, PORT)
                 time.sleep(2)
                 _v_ok, _i_ok, _reason = verify_proxy_ready(adb2, serial2, _pip, PORT)
                 if _v_ok:
@@ -1219,7 +1225,7 @@ def main():
             else:
                 print(f"[✓] 启动 FGO 前代理校验通过: {_expected}", flush=True)
             # 强制停止（幂等：未运行时 noop）
-            adb_shell(adb2, ["shell", "am", "force-stop", fgo_pkg], serial2)
+            adb_shell(adb2, ["am", "force-stop", fgo_pkg], serial2)
             time.sleep(2)
             # launcher activity 自动查询（各区服/渠道入口不同，不能硬编码）：
             # cmd package resolve-activity --brief <pkg> 会返回 pkg/xxx.Activity
@@ -1246,7 +1252,7 @@ def main():
             print(f"[*] am start 输出: {start_out.strip()[:200]}", flush=True)
             # 等 2 秒再查一下，确认进程真起来了
             time.sleep(2)
-            pidof_after = adb_shell(adb2, ["shell", "pidof", fgo_pkg], serial2).strip()
+            pidof_after = adb_shell(adb2, ["pidof", fgo_pkg], serial2).strip()
             if pidof_after:
                 print(f"[*] FGO 进程已起来: PID={pidof_after}", flush=True)
             else:
@@ -1342,7 +1348,7 @@ def main():
     wait_timeout = tap_cfg["tap_timeout"] if tap_cfg["auto_tap"] else 600
     cancelled, found = wait_for_capture(
         check_new_file, popup, signal_file,
-        proxy_str=proxy_str, port=PORT, timeout=wait_timeout,
+        proxy_str=proxy_str, timeout=wait_timeout,
     )
     tap_stop["done"] = True  # 无论成功/超时，都停掉自动点击
 
@@ -1358,21 +1364,14 @@ def main():
         if not (_adb and _serial):
             return
         try:
-            _pid = adb_shell(_adb, ["shell", "pidof", _pkg], _serial).strip()
+            _pid = adb_shell(_adb, ["pidof", _pkg], _serial).strip()
             if _pid:
-                adb_shell(_adb, ["shell", "am", "force-stop", _pkg], _serial)
+                adb_shell(_adb, ["am", "force-stop", _pkg], _serial)
                 time.sleep(2)
         except Exception:
             pass
         # ⚠️ 严禁用 `:0` 清空（历史回归令 FGO 直连 443）→ 用 delete 彻底清除
-        adb_shell(
-            _adb,
-            ["shell",
-             "settings delete global http_proxy; "
-             "settings delete global global_http_proxy_host; "
-             "settings delete global global_http_proxy_port"],
-            _serial,
-        )
+        clear_proxy(_adb, _serial)
 
     if cancelled:
         _stop_fgo_and_clear_proxy()

@@ -2,13 +2,8 @@
 """
 wait_popup_win32.py — 纯 ctypes 原生 Win32 弹窗（无外部依赖）
 
-用途 1（独立进程）：
+用途（独立进程）：
     pythonw wait_popup_win32.py -Message "..." -SignalFile "..."
-
-用途 2（同进程内）：
-    popup = WaitPopup("message", Path("signal.tmp"))
-    ...
-    popup.close()
 """
 
 import argparse
@@ -23,8 +18,6 @@ from pathlib import Path
 
 # ========================== Win32 常量 ==========================
 WS_OVERLAPPEDWINDOW = 0x00CF0000
-WS_VISIBLE = 0x10000000
-WS_CHILD = 0x40000000
 WS_EX_TOPMOST = 0x00000008
 WS_EX_TOOLWINDOW = 0x00000080
 WM_DESTROY = 0x0002
@@ -37,12 +30,10 @@ HWND_TOPMOST = -1
 CS_HREDRAW = 0x0002
 CS_VREDRAW = 0x0001
 PM_REMOVE = 0x0001
-COLOR_WINDOW = 5
 
 WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_long, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
 
 WM_PAINT = 0x000F
-GWLP_USERDATA = -21
 DT_CENTER = 0x00000001
 DT_VCENTER = 0x00000004
 DT_SINGLELINE = 0x00000020
@@ -356,15 +347,6 @@ class WaitPopup:
         finally:
             self._closed = True
             self._done.set()
-
-    def close(self, timeout=5):
-        self._closed = True
-        if self.signal_file and not self.signal_file.exists():
-            try:
-                self.signal_file.write_text("done", encoding="utf-8")
-            except Exception:
-                pass
-        self._done.wait(timeout=timeout)
 
     def wait(self, timeout=None):
         if timeout is None:

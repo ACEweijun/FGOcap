@@ -20,11 +20,7 @@ import time
 
 import auto_capture as ac
 
-PROXY_CMDS = (
-    "settings delete global http_proxy",
-    "settings delete global global_http_proxy_host",
-    "settings delete global global_http_proxy_port",
-)
+# 【P1-5】清代理统一走 auto_capture.clear_proxy（原 PROXY_CMDS 手工列表已删除）
 
 
 def main():
@@ -53,9 +49,9 @@ def main():
 
     if args.stop_fgo:
         pkg = ac.resolve_fgo_package(adb, serial)
-        pid = ac.adb_shell(adb, ["shell", "pidof", pkg], serial).strip()
+        pid = ac.adb_shell(adb, ["pidof", pkg], serial).strip()
         if pid:
-            ac.adb_shell(adb, ["shell", "am", "force-stop", pkg], serial)
+            ac.adb_shell(adb, ["am", "force-stop", pkg], serial)
             time.sleep(1)
             print(f"[OK]   FGO   已停止（{pkg}，pid={pid}）")
         else:
@@ -64,8 +60,7 @@ def main():
     before = ac.adb_shell(adb, ["settings", "get", "global", "http_proxy"],
                           serial, timeout=10).strip()
     print(f"[--]   清理前 http_proxy = {before or '(空)'}")
-    for cmd in PROXY_CMDS:
-        ac.adb_shell(adb, ["shell", cmd], serial, timeout=15)
+    ac.clear_proxy(adb, serial)
     after = ac.adb_shell(adb, ["settings", "get", "global", "http_proxy"],
                          serial, timeout=10).strip()
     if not after or after == "null":
@@ -100,7 +95,7 @@ def main():
                     f"rm -f /system/etc/security/cacerts/{name} "
                     f"/apex/com.android.conscrypt/cacerts/{name}"
                 )
-                ac.adb_shell(adb, ["shell", f"su -c '{script}'"], serial, timeout=30)
+                ac.adb_shell(adb, [f"su -c '{script}'"], serial, timeout=30)
                 if ac.emulator_has_ca(adb, serial, name):
                     print(f"[!!]   CA     仍存在（{name}）：多半是 adbd 非 root，"
                           "在模拟器里以 root 再删一次")

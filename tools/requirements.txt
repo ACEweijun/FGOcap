@@ -1,0 +1,2 @@
+# FGOcap 运行依赖（【P2-13】工程化收尾）
+mitmproxy>=10

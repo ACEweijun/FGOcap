@@ -11,6 +11,8 @@ from enum import StrEnum
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from datetime import datetime
+
 from mitmproxy import http
 
 
@@ -38,10 +40,11 @@ def save_response(content: bytes | str, region: Region, key: str):
       · 非合法 JSON 一律不落盘（只打日志）
       · 先写 .tmp 再 replace，保证目录里出现的文件一定是完整的
 
-    文件名固定为 <key>_<区服>.json（不带时间戳），且每次输出前清空目录里的
-    旧 json —— 目录里永远只留最新一次抓包的结果，文件名稳定好找好导入。
+    文件名固定为 <key>_<区服>_<日期>.json（【P1-4】带日期便于归档区分），
+    且每次输出前清空目录里的旧 json —— 目录里永远只留最新一次抓包的结果，
+    文件名稳定好找好导入。
     """
-    filename = f"{key}_{region.value}.json"
+    filename = f"{key}_{region.value}_{datetime.now():%Y%m%d}.json"
     folder = Path(key)
     fp = folder / filename
     payload = content.encode("utf-8") if isinstance(content, str) else content
@@ -91,7 +94,7 @@ def get_region(
 class TopLoginAddOn:
     def response(self, flow: http.HTTPFlow) -> None:
         if get_region(flow):
-            print(flow.request.url)
+            pass  # 首个匹配仅用于触发判断；后续 get_region 带 path 参数决定是否保存
         region = get_region(flow, "/login/top", "_key=toplogin")
         if not region:
             return
