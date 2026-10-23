@@ -3,15 +3,9 @@ chcp 65001 >nul
 title FGO Doctor
 cd /d "%~dp0"
 
-rem 查找 python（优先 PATH，其次常见安装位置）
-set "PY="
-for %%p in (python py) do (
-    where %%p >nul 2>nul && set "PY=%%p" && goto found
-)
-if exist "%LocalAppData%\Programs\Python\Python314\python.exe" set "PY=%LocalAppData%\Programs\Python\Python314\python.exe" & goto found
-if exist "%LocalAppData%\Programs\Python\Python312\python.exe" set "PY=%LocalAppData%\Programs\Python\Python312\python.exe" & goto found
-if exist "C:\Python312\python.exe" set "PY=C:\Python312\python.exe" & goto found
-goto nopython
+rem 查找 python（公共段，见 find_python.cmd）
+call find_python.cmd
+if errorlevel 1 goto nopython
 
 :found
 echo [OK] Python: %PY%
