@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 抓包数据（含账号登录信息，绝不入库）
+toplogin/
+*.json
+
+# 日志 / 临时文件
+*.log
+*.tmp
+wait_popup_err.log
+auto_run.log
+
+# 第三方二进制 / 安装包（体积大，让用户自行安装）
+tools/mitmproxy-12.2.3/
+*.apk
+
+# 调试脚本
+test_popup.py
+
+# 归档的旧抓包数据（含账号信息，绝不入库）
+toplogin_old/
+
+# 备份文件（不入库）
+*.bak*
+
+# 输出产物目录
+output/
