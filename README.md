@@ -1,3 +1,14 @@
+---
+AIGC:
+    Label: "1"
+    ContentProducer: 001191440300708461136T1XGW3
+    ProduceID: 71d6a37e1f48b09cf117b4eaf1cc8472_8973e72ccee811f1b37d525400248c00
+    ReservedCode1: /gq3ulJKsS3TZl4IgeA+xPIdOBzqJGyrEXZFdLcojWsf8viaNFMYGM0H6hUnIqVMlJ4RBa9avYOZbLTGQ71gk5aYppR2eCR5GMjQolyAFD3mJUF9FeS7JebL41i2xLi4VdqVuOnnKpp015tgc17wsfQCTXmegboPQ+2ug1rKM6kBjpXcGwTRA17Uvpw=
+    ContentPropagator: 001191440300708461136T1XGW3
+    PropagateID: 71d6a37e1f48b09cf117b4eaf1cc8472_8973e72ccee811f1b37d525400248c00
+    ReservedCode2: /gq3ulJKsS3TZl4IgeA+xPIdOBzqJGyrEXZFdLcojWsf8viaNFMYGM0H6hUnIqVMlJ4RBa9avYOZbLTGQ71gk5aYppR2eCR5GMjQolyAFD3mJUF9FeS7JebL41i2xLi4VdqVuOnnKpp015tgc17wsfQCTXmegboPQ+2ug1rKM6kBjpXcGwTRA17Uvpw=
+---
+
 # FGO 一键抓包（导入 Chaldea）
 
 双击 bat 或 Quicker 触发 → 自动完成**代理设置 + 证书安装 + mitmdump 抓包 + FGO 冷启动 + 自动点登录** → 生成 `toplogin_<区服>_YYYYMMDD.json` 并自动复制剪贴板 → 导入 Chaldea。全程只在登录页出现时自动点击，无需其他任何交互。
@@ -9,7 +20,7 @@
 - **代理自检 + 守门**：设置代理后读回校验（最多 3 轮），全部失败则报错退出**绝不带着失效代理启动 FGO**
 - **模拟器自动适配**：按盘符扫描 `<盘>:\leidian\LDPlayer*\adb.exe` 与 `<盘>:\software\leidian\LDPlayer*\adb.exe`（重装系统换盘符也不怕），再加硬编码路径与 PATH 三级兜底
 - **FGO 零打扰**：抓包成功后**不删代理、不杀进程、不重启 FGO**，由后台守护等你退出 FGO 后自动还原环境（避免游戏连接被切断）
-- 抓到数据自动复制剪贴板 + 打开 `toplogin/` 文件夹；**剪贴板复制失败时弹窗引导改用 Chaldea「从文件」导入**
+- 抓到数据自动复制剪贴板，**不弹窗、不打开文件夹**；`toplogin/` 目录只保留最新一次抓包结果（旧 json 自动删除），剪贴板复制失败时控制台提示改用 Chaldea「从文件」导入
 - **带日期文件名 + 自动清场**：输出文件为 `toplogin_<区服>_YYYYMMDD.json`（带日期便于归档），写新文件前自动清空目录里的旧 json——目录里永远只有最新一次抓包的结果
 - **坏数据不落盘**：抓包响应先本地校验 JSON 合法性（含 `response` 字段），非法/半截文件不写入，原子落盘避免损坏
 
@@ -103,8 +114,9 @@ FGOcap/
 1. 启动模拟器（等完全开机，**不要先开 FGO**）
 2. 双击 `一键抓包.bat`
 3. 弹窗显示「✓ 抓包环境已就绪」→ FGO 被自动启动 → 登录按钮被 ADB 自动点击
-4. 公告页加载完成 = 抓包成功 → 弹窗自动关、剪贴板已有数据、文件夹已打开（文件：`toplogin_<区服>_YYYYMMDD.json`）
-5. Chaldea → 导入 → Https抓包 → 选账号 → **从剪贴板**；若弹窗提示「剪贴板复制失败」，点 **从文件** 选择刚生成的 `toplogin_<区服>_YYYYMMDD.json`
+4. 公告页加载完成 = 抓包成功 → **无弹窗**，剪贴板已有数据（文件：`tools/toplogin/toplogin_<区服>_YYYYMMDD.json`，目录内只保留最新一个，旧 json 自动删除）
+5. Chaldea → 导入 → Https抓包 → 选账号 → **从剪贴板**；若控制台提示「剪贴板复制失败」，点 **从文件** 选择 toplogin 目录里最新的 json
+6. **CMD 窗口会保持到 FGO 彻底退出、代理自动还原后才自动关闭**（提前手动关窗口不影响后台清理）；想早点关窗口可以直接关
 
 **Quicker**：「运行或打开」步骤直接指向 `tools\一键抓包.bat`（参数留空，勾「失败后停止」）。
 脚本内部会等待模拟器就绪（最多 2 分钟），可与「启动模拟器」步骤并行。
@@ -169,3 +181,4 @@ package=com.bilibili.fgo.qihoo
 - [mitmproxy](https://mitmproxy.org/) —— HTTPS 抓包核心（MIT License）
 
 本仓库脚本（`auto_capture.py` / `doctor.py` / `restore.py` / `_cleanup_daemon.py` / `wait_popup_win32.py` / `一键抓包.bat` / `一键抓包-自检.bat` / `一键抓包-恢复.bat` / `restore_proxy.bat` / `find_python.cmd`）采用 MIT License；`fgoaddon.py` 版权归 Chaldea 项目所有。
+*（内容由AI生成，仅供参考）*

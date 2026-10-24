@@ -1399,6 +1399,19 @@ def main():
     # ===== 5. 成功：FGO 保持在线，清理交给后台守护 =====
     size_mb = found.stat().st_size / 1024 / 1024
 
+    # 只保留最新一次抓包结果：删除目录内其他旧 json
+    # （fgoaddon 落盘前也会清，此处兜底防 addon 清理失败/外部文件混入）
+    try:
+        for _old in TOPLOGIN_DIR.glob("toplogin_*.json"):
+            if _old.name != found.name:
+                try:
+                    _old.unlink()
+                    print(f"[*] 已删除旧抓包文件: {_old.name}", flush=True)
+                except OSError as _e:
+                    print(f"[!] 旧文件 {_old.name} 删除失败: {_e}", flush=True)
+    except Exception as _e:
+        print(f"[!] 清理旧抓包文件异常: {_e}", flush=True)
+
     copied = False
     try:
         with open(found, "rb") as f:
@@ -1411,21 +1424,20 @@ def main():
         )
         copied = (proc.returncode == 0)
     except Exception as e:
-        # 【P0-3】剪贴板失败不静默：写日志，弹窗改走文件导入
+        # 【P0-3】剪贴板失败不静默：写日志，引导走文件导入
         print(f"[!] 剪贴板复制失败：{e}", flush=True)
     if not copied:
         print("[!] 剪贴板复制失败（clip 不可用？），请用 Chaldea 文件导入", flush=True)
 
-    try:
-        subprocess.Popen(
-            ["explorer", str(TOPLOGIN_DIR)],
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-    except Exception:
-        pass
+    print(f"[✓] 抓包成功：{found.name}（{size_mb:.1f} MB）", flush=True)
+    if copied:
+        print("[✓] 已复制到剪贴板：Chaldea → 导入 → Https抓包 → 选账号 → 从剪贴板", flush=True)
+    else:
+        print("[!] 请用 Chaldea 文件导入：导入 → Https抓包 → 选账号 → 从文件 → 选 toplogin 目录里最新的 json", flush=True)
 
     # 拉起清理守护：等 FGO 退出后自动清代理 + 停 mitmdump。
     # 这样 FGO 全程无感（代理/mitmdump 都还在），不会因清代理被切断连接。
+    daemon_proc = None
     try:
         daemon_py = TOOLS_DIR / "_cleanup_daemon.py"
         if daemon_py.is_file() and _adb and _serial:
@@ -1440,7 +1452,7 @@ def main():
                 ["powershell", "-NoProfile", "-Command", ps_kill_daemons],
                 timeout=15, creationflags=subprocess.CREATE_NO_WINDOW,
             )
-            subprocess.Popen(
+            daemon_proc = subprocess.Popen(
                 [pythonw, str(daemon_py), _adb, _serial, _pkg, str(PORT)],
                 creationflags=(
                     subprocess.DETACHED_PROCESS
@@ -1454,32 +1466,25 @@ def main():
     except Exception as e:
         print(f"[!] 清理守护启动失败（可手动清代理）：{e}", flush=True)
 
-    if copied:
-        hint = (
-            "✅ 已自动复制到剪贴板！\n\n"
-            "在 Chaldea 里：\n"
-            "  1. 进入【导入 → Https抓包】\n"
-            "  2. 选好要导入的账号\n"
-            "  3. 点击【导入】按钮 → 选【从剪贴板】即可"
-        )
-    else:
-        hint = (
-            "⚠️ 剪贴板复制失败，已打开文件夹。\n\n"
-            "请用 Chaldea 文件导入：\n"
-            "  1. 进入【导入 → Https抓包】\n"
-            "  2. 选好要导入的账号\n"
-            "  3. 点击【导入】按钮 → 选【从文件】→ 选择这个 json"
-        )
-
-    info(
-        f"抓包成功！\n\n"
-        f"文件：{found.name}\n"
-        f"大小：{size_mb:.1f} MB\n\n"
-        f"{hint}\n\n"
-        f"✅ FGO 保持在线（未中断、未重启）。\n"
-        f"退出 FGO 后代理会自动还原；\n"
-        f"下次运行本工具也会自动清理。"
-    )
+    # 【2026-10-24】主脚本等守护干完活再退出：CMD 窗口保持到 FGO 彻底关闭、
+    # 代理还原之后（提前关窗口不影响后台守护继续清理）。
+    if daemon_proc is not None:
+        print("[*] FGO 保持在线，本窗口将保持到 FGO 退出且代理还原后自动关闭", flush=True)
+        try:
+            rc = daemon_proc.wait()
+        except Exception as _e:
+            rc = -1
+            print(f"[!] 等待清理守护失败：{_e}", flush=True)
+        if rc == 0:
+            _left = adb_shell(
+                _adb, ["settings", "get", "global", "http_proxy"], _serial
+            ).strip()
+            if _left and _left != "null":
+                print(f"[!] 代理仍残留 {_left!r}，请手动运行 tools/restore_proxy.bat", flush=True)
+            else:
+                print("[✓] FGO 已退出，代理已还原，mitmdump 已停止，全部完成", flush=True)
+        else:
+            print(f"[!] 清理守护异常退出（code={rc}），请手动运行 tools/restore_proxy.bat 清代理", flush=True)
 
 
 if __name__ == "__main__":
