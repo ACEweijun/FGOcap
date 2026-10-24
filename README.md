@@ -19,7 +19,7 @@ AIGC:
 - **证书自动安装**：检测到模拟器未信任 mitmproxy CA 时，自动 root 写入系统信任库——Android 9 写 legacy 库，Android 10+ 写 APEX + legacy 双库（前提：模拟器已开 root，见下方「安装」）
 - **代理自检 + 守门**：设置代理后读回校验（最多 3 轮），全部失败则报错退出**绝不带着失效代理启动 FGO**
 - **模拟器自动适配**：按盘符扫描 `<盘>:\leidian\LDPlayer*\adb.exe` 与 `<盘>:\software\leidian\LDPlayer*\adb.exe`（重装系统换盘符也不怕），再加硬编码路径与 PATH 三级兜底
-- **FGO 零打扰**：抓包成功后**不删代理、不杀进程、不重启 FGO**，由后台守护等你退出 FGO 后自动还原环境（避免游戏连接被切断）
+- **FGO 零打扰**：抓包成功后**不删代理、不杀进程、不重启 FGO**，由后台守护等你退出 FGO 后自动还原环境（避免游戏连接被切断）；CMD 窗口同步保持到清理完成后才自动关闭（见「使用」第 6 步）
 - 抓到数据自动复制剪贴板，**不弹窗、不打开文件夹**；`toplogin/` 目录只保留最新一次抓包结果（旧 json 自动删除），剪贴板复制失败时控制台提示改用 Chaldea「从文件」导入
 - **带日期文件名 + 自动清场**：输出文件为 `toplogin_<区服>_YYYYMMDD.json`（带日期便于归档），写新文件前自动清空目录里的旧 json——目录里永远只有最新一次抓包的结果
 - **坏数据不落盘**：抓包响应先本地校验 JSON 合法性（含 `response` 字段），非法/半截文件不写入，原子落盘避免损坏
@@ -91,8 +91,20 @@ FGOcap/
 │   ├── fgoaddon.py         ← mitmproxy 插件（来自 Chaldea）
 │   ├── wait_popup_win32.py ← 进度弹窗
 │   ├── config.ini.example  ← 配置模板（复制为 config.ini 生效）
+│   ├── config.ini          ← 本地配置（可选；不存在时全自动探测，被 .gitignore 忽略）
 │   └── requirements.txt    ← Python 依赖清单
-└── README.md / LICENSE
+└── README.md / LICENSE / .gitignore
+```
+
+**运行时产物**（脚本自动创建/清理，均被 `.gitignore` 排除，无需手动管理）：
+
+```
+tools/toplogin/            ← 抓包输出目录（自动创建；含账号登录信息，切勿外传）
+tools/mitmdump.log         ← mitmdump 全量流量日志（排查"抓不到"就看它）
+tools/run.log              ← 脚本统一异常日志（带时间戳；出异常贴这个给维护者）
+tools/.wait_phase.tmp      ← 进度弹窗状态文件（status_popup=1 时生成）
+tools/.wait_signal.tmp     ← 进度弹窗取消信号文件
+tools/__pycache__/         ← Python 字节码缓存（自动生成）
 ```
 
 ## 重装系统 / 新机速查清单
@@ -160,10 +172,12 @@ package=com.bilibili.fgo.qihoo
 | 一直抓不到 | 看 `tools/mitmdump.log`：无 FGO 流量 = 代理未生效；有流量无 `login/top` = FGO 没走登录流程（需冷启动） |
 | FGO 报「连接失败」 | 模拟器未信任 CA（360 SDK 校验）→ 确认 root 已开（验证命令见速查清单 #4），重跑脚本会自动补装 |
 | 弹「CA 写入模拟器失败」但 root 已开 | 老版本脚本的 `su -c` 引号 bug（2026-09-13 已修复），更新 `auto_capture.py` 即可；或手动装：`adb push %USERPROFILE%\.mitmproxy\mitmproxy-ca-cert.pem /data/local/tmp/c8750f0d.0` 后 `adb shell "su -c 'cp /data/local/tmp/c8750f0d.0 /system/etc/security/cacerts/'"` + `chmod 644` + 重启模拟器 |
-| 弹「未找到模拟器Adb」 | 模拟器未装或不在常见路径：确认已装雷电并开机；或把安装目录加入 PATH 后**重开终端** |
+| 弹「未找到模拟器 adb」 | 模拟器未装或不在常见路径：确认已装雷电并开机；或把安装目录加入 PATH 后**重开终端** |
 | 弹「未找到 mitmdump 可执行文件」 | 未装 mitmproxy：`pip install -r tools/requirements.txt`；装完重开终端 |
 | 模拟器上不了网 | 代理残留：**直接双击 `tools/restore_proxy.bat` 一键清代理 + 停 mitmdump**；手动命令为 `adb shell settings delete global http_proxy` + 删除 `global_http_proxy_host` / `global_http_proxy_port`。**严禁用 `settings put global http_proxy :0`**（空值会让 FGO 直连 443，抓不到包） |
-| 提示「剪贴板复制失败」 | 8MB 大文本偶发复制失败：改用 Chaldea「从文件」导入刚生成的 `toplogin_<区服>_YYYYMMDD.json`，不影响结果 |
+| 提示「剪贴板复制失败」 | 8MB 大文本偶发复制失败：改用 Chaldea「从文件」导入 `toplogin/` 目录里最新的 json，不影响结果 |
+| 抓包成功后 CMD 窗口一直不关 | **设计如此**：窗口保持到 FGO 彻底退出、代理还原后才自动关闭（后台清理守护在干活，控制台有进度行）。想提前关可直接关，不影响守护继续清理 |
+| toplogin 目录里旧 json 去哪了 | 设计只保留最新一次抓包结果：addon 落盘前清空旧 json，主脚本成功路径再兜底删一次 |
 | 异常后行为怪异、日志难定位 | 看 `tools/run.log`（脚本统一异常日志，含时间戳），把末尾内容贴给维护者 |
 | mitmdump 启动失败 | `pip install -r tools/requirements.txt`，确认 `mitmdump --version` 可运行 |
 | **窗口刷屏「'xxx' 不是内部或外部命令，也不是可运行的程序或批处理文件」** | 批处理被编辑器存成了 **LF 换行**（Unix）。cmd.exe 的批处理解析器只认 **CRLF**，LF 会把行切错、`goto` / `for` 全部失效，于是每一行都报这个错。修复：换行符改回 CRLF——VS Code 右下角把 `LF` 切成 `CRLF`，或 `python -c "p=r'tools/一键抓包.bat';d=open(p,'rb').read().replace(b'\r\n',b'\n').replace(b'\n',b'\r\n');open(p,'wb').write(d)"`。**改动所有 `.bat` / `.cmd` 文件（含 `find_python.cmd` / `restore_proxy.bat`）后务必确认仍是 CRLF** |
