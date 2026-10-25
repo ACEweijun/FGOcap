@@ -18,6 +18,7 @@ AIGC:
 - **全自动**：从触发到抓包完成，无需键盘鼠标操作（登录按钮由 ADB 自动点击，可在 `config.ini` 设 `auto_tap=0` 关闭）
 - **证书自动安装**：检测到模拟器未信任 mitmproxy CA 时，自动 root 写入系统信任库——Android 9 写 legacy 库，Android 10+ 写 APEX + legacy 双库（前提：模拟器已开 root，见下方「安装」）
 - **代理自检 + 守门**：设置代理后读回校验（最多 3 轮），全部失败则报错退出**绝不带着失效代理启动 FGO**
+- **单实例防重入**：命名互斥体保证同时只有一个抓包流程——重复触发会弹窗提示「已有抓包流程正在运行中」并退出，不会两个实例互相抢代理、互停抓包服务（进程被杀后锁自动释放，不会留锁）
 - **模拟器自动适配**：按盘符扫描 `<盘>:\leidian\LDPlayer*\adb.exe` 与 `<盘>:\software\leidian\LDPlayer*\adb.exe`（重装系统换盘符也不怕），再加硬编码路径与 PATH 三级兜底
 - **FGO 零打扰**：抓包成功后**不删代理、不杀进程、不重启 FGO**，由后台守护等你退出 FGO 后自动还原环境（避免游戏连接被切断）；CMD 窗口同步保持到清理完成后才自动关闭（见「使用」第 6 步）
 - 抓到数据自动复制剪贴板，**不弹窗、不打开文件夹**；`toplogin/` 目录只保留最新一次抓包结果（旧 json 自动删除），剪贴板复制失败时控制台提示改用 Chaldea「从文件」导入
@@ -59,7 +60,7 @@ FGO (模拟器内) ──HTTPS──→ Android 系统代理 ──→ mitmdump 
 pip install -r tools/requirements.txt
 ```
 
-> ⚠️ **Windows 商店桩坑**：重装系统后裸敲 `python` 可能弹出 Microsoft Store——这是「应用执行别名」把 `python` 指向了商店桩。修复：安装真实 Python 时勾选 *Add to PATH*，再到 设置 → 应用 → 高级应用设置 → 应用执行别名，把 `python.exe` / `python3.exe` 的开关关掉。验证：新开终端跑 `where python`，第一行应是真实 Python 路径。
+> ⚠️ **Windows 商店桩坑**：重装系统后裸敲 `python` 可能弹出 Microsoft Store——这是「应用执行别名」把 `python` 指向了商店桩。**本工具的 `find_python.cmd` 会自动跳过商店桩**（已知安装位置优先 → PATH 逐条跳过 WindowsApps 路径 → 候选验证 3.11+），用 bat 触发无需手动关别名；但自己在终端里敲 `python` 手动跑脚本时，仍建议安装真实 Python 时勾选 *Add to PATH* 并关掉应用执行别名。验证：新开终端跑 `where python`，第一行应是真实 Python 路径。
 
 ### 2. 模拟器开启 ROOT 权限（二选一）
 
@@ -83,7 +84,7 @@ FGOcap/
 │   ├── 一键抓包-自检.bat   ← 环境自检入口（调用 doctor.py）
 │   ├── 一键抓包-恢复.bat   ← 环境恢复入口（调用 restore.py）
 │   ├── restore_proxy.bat   ← 异常中断后一键清代理 + 停 mitmdump
-│   ├── find_python.cmd     ← 三个主入口 bat 共用的 Python 查找段
+│   ├── find_python.cmd     ← 三个主入口 bat 共用的 Python 查找段（自动跳过商店桩 + 版本校验）
 │   ├── auto_capture.py     ← 主脚本
 │   ├── doctor.py           ← 环境自检脚本
 │   ├── restore.py          ← 环境恢复脚本
@@ -113,7 +114,7 @@ tools/__pycache__/         ← Python 字节码缓存（自动生成）
 
 | # | 项目 | 操作 | 验证 |
 |---|---|---|---|
-| 1 | 真实 Python | python.org 安装包，勾 **Add to PATH**；关闭应用执行别名的 python 桩 | `where python` 第一行非 WindowsApps |
+| 1 | 真实 Python | python.org 安装包，勾 **Add to PATH**（`find_python.cmd` 会自动跳过商店桩，此项主要为手动终端着想）；关闭应用执行别名的 python 桩 | `where python` 第一行非 WindowsApps |
 | 2 | mitmproxy | `pip install -r tools/requirements.txt` | `mitmdump --version` 有输出 |
 | 3 | 雷电模拟器 | 安装位置任意（脚本按盘符自动扫）；建议把安装目录加入 PATH | `where adb` 命中模拟器目录 |
 | 4 | ROOT 权限 | `ldconsole modify --index 0 --root 1` + `ldconsole reboot --index 0` | `adb shell su -c id` 返回 `uid=0(root)` |
@@ -124,7 +125,7 @@ tools/__pycache__/         ← Python 字节码缓存（自动生成）
 ## 使用
 
 1. 启动模拟器（等完全开机，**不要先开 FGO**）
-2. 双击 `一键抓包.bat`
+2. 双击 `一键抓包.bat`（若已有抓包在运行，会弹窗提示并退出，不会重复启动）
 3. 弹窗显示「✓ 抓包环境已就绪」→ FGO 被自动启动 → 登录按钮被 ADB 自动点击
 4. 公告页加载完成 = 抓包成功 → **无弹窗**，剪贴板已有数据（文件：`tools/toplogin/toplogin_<区服>_YYYYMMDD.json`，目录内只保留最新一个，旧 json 自动删除）
 5. Chaldea → 导入 → Https抓包 → 选账号 → **从剪贴板**；若控制台提示「剪贴板复制失败」，点 **从文件** 选择 toplogin 目录里最新的 json
@@ -177,6 +178,7 @@ package=com.bilibili.fgo.qihoo
 | 模拟器上不了网 | 代理残留：**直接双击 `tools/restore_proxy.bat` 一键清代理 + 停 mitmdump**；手动命令为 `adb shell settings delete global http_proxy` + 删除 `global_http_proxy_host` / `global_http_proxy_port`。**严禁用 `settings put global http_proxy :0`**（空值会让 FGO 直连 443，抓不到包） |
 | 提示「剪贴板复制失败」 | 8MB 大文本偶发复制失败：改用 Chaldea「从文件」导入 `toplogin/` 目录里最新的 json，不影响结果 |
 | 抓包成功后 CMD 窗口一直不关 | **设计如此**：窗口保持到 FGO 彻底退出、代理还原后才自动关闭（后台清理守护在干活，控制台有进度行）。想提前关可直接关，不影响守护继续清理 |
+| 弹「已有抓包流程正在运行中」 | 单实例保护（命名互斥体）：同时只允许一个抓包流程。确认没有别的在跑就等几秒再试；进程被杀后锁自动释放，无需手动清理 |
 | toplogin 目录里旧 json 去哪了 | 设计只保留最新一次抓包结果：addon 落盘前清空旧 json，主脚本成功路径再兜底删一次 |
 | 异常后行为怪异、日志难定位；或想看抓包等待/清理过程 | 看 `tools/run.log`：统一异常日志（时间戳 + traceback），抓包成功后还会记录 `[wait]` 等待与清理生命周期（守护何时退出、等了多久），把末尾内容贴给维护者 |
 | mitmdump 启动失败 | `pip install -r tools/requirements.txt`，确认 `mitmdump --version` 可运行 |
