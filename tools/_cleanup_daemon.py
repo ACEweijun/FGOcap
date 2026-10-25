@@ -25,12 +25,19 @@ import auto_capture as ac
 
 
 def _kill_old_instances(serial):
-    """杀掉命令行同时含 _cleanup_daemon.py 与本 serial 的旧守护进程。"""
+    """杀掉命令行同时含 _cleanup_daemon.py 与本 serial 的旧守护进程。
+
+    【2026-10-25 修复】必须排除自身 PID：本进程自己的命令行同样匹配
+    `*_cleanup_daemon.py*` + serial，旧版不排除 → 守护启动后先把自己
+    Stop-Process 掉 → 主脚本 wait() 秒返回、CMD 窗口抓到数据就关，
+    且 handoff 已交棒 → atexit 跳过清理 → 代理/mitmdump 永久残留。
+    """
     try:
         ps = (
             "Get-CimInstance Win32_Process | "
             "Where-Object { $_.CommandLine -like '*_cleanup_daemon.py*' -and "
-            " $_.CommandLine -like '*" + serial + "*' } | "
+            " $_.CommandLine -like '*" + serial + "*' -and "
+            " $_.ProcessId -ne " + str(os.getpid()) + " } | "
             "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
         )
         subprocess.run(["powershell", "-NoProfile", "-Command", ps],

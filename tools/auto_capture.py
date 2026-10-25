@@ -253,12 +253,25 @@ def _kill_by_port(port):
     """【P1-10】netstat -ano 按端口找 LISTENING PID，taskkill /PID /T 精确清理。
 
     替代 taskkill /IM mitmdump.exe：/IM 全杀会误伤其它同名进程。
+
+    【2026-10-25】中文 Windows 的 netstat 输出是 GBK，Python3.14 的 text=True
+    按 UTF-8 解码会抛 UnicodeDecodeError，被外层 except 吞掉 → 清理静默失效
+    （守护清完代理后杀不掉 mitmdump，每次成功抓包都泄漏一个 mitmdump）。
+    改为字节读取 + utf-8/gbk/latin-1 逐级解码（与 adb_shell 同一套路）。
     """
     try:
-        r = subprocess.run(["netstat", "-ano"], capture_output=True, text=True,
+        r = subprocess.run(["netstat", "-ano"], capture_output=True,
                            timeout=20, creationflags=subprocess.CREATE_NO_WINDOW)
+        out = r.stdout or b""
+        text = ""
+        for enc in ("utf-8", "gbk", "latin-1"):
+            try:
+                text = out.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
         pids = set()
-        for line in (r.stdout or "").splitlines():
+        for line in text.splitlines():
             if f":{port} " in line and "LISTENING" in line:
                 parts = line.split()
                 if parts:
@@ -1470,11 +1483,28 @@ def main():
     # 代理还原之后（提前关窗口不影响后台守护继续清理）。
     if daemon_proc is not None:
         print("[*] FGO 保持在线，本窗口将保持到 FGO 退出且代理还原后自动关闭", flush=True)
+        print("[*] 提前手动关窗口不影响后台守护继续清理", flush=True)
         try:
-            rc = daemon_proc.wait()
-        except Exception as _e:
-            rc = -1
-            print(f"[!] 等待清理守护失败：{_e}", flush=True)
+            with open(RUN_LOG, "a", encoding="utf-8") as _f:
+                _f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [wait] 主脚本开始等待清理守护（FGO 保持在线）\n")
+        except Exception:
+            pass
+        waited = 0
+        rc = None
+        while rc is None:
+            try:
+                rc = daemon_proc.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                waited += 60
+                print(f"[*] FGO 仍在运行，代理保持中…（已等待 {waited // 60} 分钟）", flush=True)
+            except Exception as _e:
+                rc = -1
+                print(f"[!] 等待清理守护失败：{_e}", flush=True)
+        try:
+            with open(RUN_LOG, "a", encoding="utf-8") as _f:
+                _f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [wait] 清理守护退出 code={rc}（等待 {waited}s）\n")
+        except Exception:
+            pass
         if rc == 0:
             _left = adb_shell(
                 _adb, ["settings", "get", "global", "http_proxy"], _serial
