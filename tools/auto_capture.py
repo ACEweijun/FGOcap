@@ -15,11 +15,13 @@ FGO 国服一键抓包（自动版）
         绝不带失效代理启动 FGO）+ 冷启动 FGO（force-stop + am start）
   等待期：自动点击屏幕中央帮用户点【登录】（每 1.5s，默认 90s 窗口，
         抓到 toplogin 立即停；超时未抓到则结束脚本）
-  成功：toplogin JSON 自动复制剪贴板 + 打开文件夹 → 导入 Chaldea
+  成功：toplogin JSON 自动复制剪贴板 → 导入 Chaldea。**不弹窗、不开文件夹**，
+        CMD 窗口保持到 FGO 彻底退出、代理还原后才自动关闭
   收尾：成功路径**不删代理、不停 mitmdump、不动 FGO**（避免切断游戏连接），
         改由 _cleanup_daemon.py 守护，等 FGO 退出后自动还原环境
 
 用法：双击「一键抓包.bat」或用 Quicker 运行它。任何一步失败都会弹窗说明原因。
+单实例：命名互斥体防重入——已有抓包在运行时会直接提示并退出。
 """
 
 import configparser
@@ -635,14 +637,15 @@ def kill_stale_mitmdump():
     """启动前清理残留 mitmdump。
 
     【P1-10】优先 netstat -ano 按 18080 端口 PID 精确清理（不误伤同名进程）；
-    兜底 PowerShell 按命令行匹配 mitmdump 的进程；残留弹窗（pythonw
+    兜底 PowerShell 按命令行匹配 **fgoaddon.py**（只杀本工具的 mitmdump，
+    不误伤用户为其他目的启动的 mitmdump）；残留弹窗（pythonw
     wait_popup_win32.py）也按命令行精确匹配清理（不再用 WINDOWTITLE eq FGO* 模糊匹配）。
     """
     _kill_by_port(PORT)
     try:
         ps_kill_mitm = (
             "Get-CimInstance Win32_Process | "
-            "Where-Object { $_.CommandLine -like '*mitmdump*' } | "
+            "Where-Object { $_.CommandLine -like '*fgoaddon.py*' } | "
             "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
         )
         subprocess.run(["powershell", "-NoProfile", "-Command", ps_kill_mitm],
@@ -863,6 +866,23 @@ def main():
       - 用户看到弹窗立刻启动 FGO；mitmdump 在用户启动 FGO 期间就绪
       - 弹窗最终文案切到「请打开 FGO 登录到公告页」时 = ready
     """
+
+    # ===== 0. 单实例保护（防重入，2026-10-25 补上）=====
+    # 命名互斥体：进程退出（含被强杀）时系统自动释放，不会留下 stale lock。
+    # 只在本入口创建——_cleanup_daemon.py 会 import 本模块但绝不调用 main()，
+    # 不会被误判成"已在运行"（曾经的漏判把守护闷死过，见 455c863）。
+    _ERROR_ALREADY_EXISTS = 183
+    _mutex = ctypes.windll.kernel32.CreateMutexW(None, True, "FGOcap_SingleInstance_Mutex")
+    if _mutex and ctypes.windll.kernel32.GetLastError() == _ERROR_ALREADY_EXISTS:
+        error(
+            "已有抓包流程正在运行中。\n\n"
+            "同时运行两个会互相干扰（抢代理、互停抓包服务）。\n"
+            "如确认没有别的在跑，可能是上次进程没退干净，\n"
+            "等几秒或重启后再试。"
+        )
+        return
+    global _INSTANCE_MUTEX
+    _INSTANCE_MUTEX = _mutex  # 持有引用，贯穿进程生命周期
 
     def set_phase(text):
         """更新弹窗文案（mtime 防抖由 wait_popup_win32 检测）。"""
@@ -1474,8 +1494,17 @@ def main():
                 ),
             )
             print("[*] 清理守护已启动：FGO 退出后自动还原代理", flush=True)
-            # 交棒：主脚本退出时 atexit 不再清代理/停 mitmdump（避免切断 FGO 连接）
-            state["handoff_to_daemon"] = True
+            # 存活确认（2026-10-25）：守护若秒死（pythonw 缺失/import 失败等），
+            # 不能交棒——否则 atexit 跳过清理 → 代理/mitmdump 永久残留。
+            # 等 3 秒覆盖 PowerShell 冷启动，自查杀/秒退此时必已发生。
+            time.sleep(3)
+            if daemon_proc.poll() is not None:
+                print(f"[!] 清理守护启动后立即退出（code={daemon_proc.returncode}），"
+                      f"改由本脚本退出时自动清理", flush=True)
+                daemon_proc = None
+            else:
+                # 交棒：主脚本退出时 atexit 不再清代理/停 mitmdump（避免切断 FGO 连接）
+                state["handoff_to_daemon"] = True
     except Exception as e:
         print(f"[!] 清理守护启动失败（可手动清代理）：{e}", flush=True)
 
