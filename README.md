@@ -178,7 +178,7 @@ package=com.bilibili.fgo.qihoo
 | 提示「剪贴板复制失败」 | 8MB 大文本偶发复制失败：改用 Chaldea「从文件」导入 `toplogin/` 目录里最新的 json，不影响结果 |
 | 抓包成功后 CMD 窗口一直不关 | **设计如此**：窗口保持到 FGO 彻底退出、代理还原后才自动关闭（后台清理守护在干活，控制台有进度行）。想提前关可直接关，不影响守护继续清理 |
 | toplogin 目录里旧 json 去哪了 | 设计只保留最新一次抓包结果：addon 落盘前清空旧 json，主脚本成功路径再兜底删一次 |
-| 异常后行为怪异、日志难定位 | 看 `tools/run.log`（脚本统一异常日志，含时间戳），把末尾内容贴给维护者 |
+| 异常后行为怪异、日志难定位；或想看抓包等待/清理过程 | 看 `tools/run.log`：统一异常日志（时间戳 + traceback），抓包成功后还会记录 `[wait]` 等待与清理生命周期（守护何时退出、等了多久），把末尾内容贴给维护者 |
 | mitmdump 启动失败 | `pip install -r tools/requirements.txt`，确认 `mitmdump --version` 可运行 |
 | **窗口刷屏「'xxx' 不是内部或外部命令，也不是可运行的程序或批处理文件」** | 批处理被编辑器存成了 **LF 换行**（Unix）。cmd.exe 的批处理解析器只认 **CRLF**，LF 会把行切错、`goto` / `for` 全部失效，于是每一行都报这个错。修复：换行符改回 CRLF——VS Code 右下角把 `LF` 切成 `CRLF`，或 `python -c "p=r'tools/一键抓包.bat';d=open(p,'rb').read().replace(b'\r\n',b'\n').replace(b'\n',b'\r\n');open(p,'wb').write(d)"`。**改动所有 `.bat` / `.cmd` 文件（含 `find_python.cmd` / `restore_proxy.bat`）后务必确认仍是 CRLF** |
 | **Quicker 触发毫无反应（连 cmd 窗口都不出现）** | 工程在映射盘（如 `X:\`）上、而 Quicker 以**管理员身份**运行时：`net use` 建的盘符只属于非提权会话，提权上下文里 `X:` 根本不存在，ShellExecute 找不到文件 → 静默失败、Quicker 也不报错。两条路：① 放一个**本地启动器** `FGOcap_launch.cmd`（放在本地盘，Quicker 第 1 步指向它）：先 `if not exist` 判断目标，缺失就自己 `net use X: \\nas\share`，再 `call` 真正的 bat，并把每次运行写进日志，便于事后定位；② 导入 `EnableLinkedConnections=1`（`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System`，DWORD）后**重启**，让映射盘对提权进程可见，之后 Quicker 可直连 `X:\...` |
