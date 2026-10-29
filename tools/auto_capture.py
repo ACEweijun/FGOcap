@@ -263,11 +263,15 @@ def find_adb():
     return None
 
 
-def adb_shell(adb, args, serial=None, timeout=60):
+def adb_shell(adb, args, serial=None, timeout=60, return_rc=False):
     """调用 adb shell 执行一条命令。
 
     【P1-7】调用方统一不再传 'shell' 前缀（历史曾出现 `shell shell` 冗余，
     旧版用自动剥离兼容；现已清理全部调用点，剥离分支删除）。
+
+    return_rc=True 时返回 (rc, stdout)：守护据此区分「设备不可达」
+    （adb 命令本身失败，rc≠0：模拟器被关/崩溃/adb 抖动）与「命令成功但
+    输出为空」（如 pidof 查不到进程）。默认 False 保持返回纯字符串。
     """
     cmd = [adb]
     if serial:
@@ -279,13 +283,21 @@ def adb_shell(adb, args, serial=None, timeout=60):
             creationflags=0x08000000,  # CREATE_NO_WINDOW：避免弹 cmd 窗口
         )
         out = r.stdout
+        text = None
         for enc in ("utf-8", "gbk", "latin-1"):
             try:
-                return out.decode(enc).strip()
+                text = out.decode(enc).strip()
+                break
             except UnicodeDecodeError:
                 continue
-        return out.decode("utf-8", errors="replace").strip()
+        if text is None:
+            text = out.decode("utf-8", errors="replace").strip()
+        if return_rc:
+            return r.returncode, text
+        return text
     except Exception:
+        if return_rc:
+            return -1, ""
         return ""
 
 
@@ -1604,8 +1616,13 @@ def main():
                 print(f"[!] 代理仍残留 {_left!r}，请手动运行 tools/restore_proxy.bat", flush=True)
             else:
                 print("[✓] FGO 已退出，代理已还原，mitmdump 已停止，全部完成", flush=True)
+        elif rc == 2:
+            # 守护退出码 2 = 设备离线超过宽限期未恢复（见 _cleanup_daemon.py）
+            print("[!] 模拟器离线超过 10 分钟未恢复，守护未执行清理", flush=True)
+            print("[!] 下次开模拟器后双击 tools/一键抓包-恢复.bat 一键清代理", flush=True)
         else:
-            print(f"[!] 清理守护异常退出（code={rc}），请手动运行 tools/restore_proxy.bat 清代理", flush=True)
+            print(f"[!] 清理未完成（守护退出码 {rc}）：代理可能仍残留在模拟器中", flush=True)
+            print("[!] 双击 tools/一键抓包-恢复.bat 一键清代理 + 停 mitmdump", flush=True)
 
 
 if __name__ == "__main__":

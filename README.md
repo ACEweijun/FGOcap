@@ -20,7 +20,7 @@ AIGC:
 - **代理自检 + 守门**：设置代理后读回校验（最多 3 轮），全部失败则报错退出**绝不带着失效代理启动 FGO**
 - **单实例防重入**：命名互斥体保证同时只有一个抓包流程——重复触发会弹窗提示「已有抓包流程正在运行中」并退出，不会两个实例互相抢代理、互停抓包服务（进程被杀后锁自动释放，不会留锁）
 - **模拟器自动适配**：按盘符扫描 `<盘>:\leidian\LDPlayer*\adb.exe` 与 `<盘>:\software\leidian\LDPlayer*\adb.exe`（重装系统换盘符也不怕），再加硬编码路径与 PATH 三级兜底
-- **FGO 零打扰**：抓包成功后**不删代理、不杀进程、不重启 FGO**，由后台守护等你退出 FGO 后自动还原环境（避免游戏连接被切断）；CMD 窗口同步保持到清理完成后才自动关闭（见「使用」第 6 步）
+- **FGO 零打扰**：抓包成功后**不删代理、不杀进程、不重启 FGO**，由后台守护等你退出 FGO 后自动还原环境（避免游戏连接被切断）；CMD 窗口同步保持到清理完成后才自动关闭（见「使用」第 6 步）。守护带状态机与读回校验：**先关模拟器**（或模拟器崩溃/adb 抖动）不会误判为 FGO 退出，会等设备回来（≤10 分钟）再继续；超时未回或清理后读回代理仍在，则如实上报失败并指引恢复
 - 抓到数据自动复制剪贴板，**不弹窗、不打开文件夹**；`toplogin/` 目录只保留最新一次抓包结果（旧 json 自动删除），剪贴板复制失败时控制台提示改用 Chaldea「从文件」导入
 - **带日期文件名 + 自动清场**：输出文件为 `toplogin_<区服>_YYYYMMDD.json`（带日期便于归档），写新文件前自动清空目录里的旧 json——目录里永远只有最新一次抓包的结果
 - **坏数据不落盘**：抓包响应先本地校验 JSON 合法性（含 `response` 字段），非法/半截文件不写入，原子落盘避免损坏
@@ -88,7 +88,7 @@ FGOcap/
 │   ├── auto_capture.py     ← 主脚本
 │   ├── doctor.py           ← 环境自检脚本
 │   ├── restore.py          ← 环境恢复脚本
-│   ├── _cleanup_daemon.py  ← 清理守护（自动拉起）
+│   ├── _cleanup_daemon.py  ← 清理守护（自动拉起：等 FGO 退出后清代理+停 mitmdump，带设备离线等待与读回校验）
 │   ├── fgoaddon.py         ← mitmproxy 插件（来自 Chaldea）
 │   ├── wait_popup_win32.py ← 进度弹窗
 │   ├── config.ini.example  ← 配置模板（复制为 config.ini 生效）
@@ -176,12 +176,12 @@ package=com.bilibili.fgo.qihoo
 | 弹「未找到模拟器 adb」 | 模拟器未装或不在常见路径：确认已装雷电并开机；或把安装目录加入 PATH 后**重开终端** |
 | 弹「未找到 mitmdump 可执行文件」 | 未装 mitmproxy：`pip install -r tools/requirements.txt`；装完重开终端 |
 | 弹「抓包服务未能监听端口 18080：Popen 失败 [WinError 4551]」 | **Smart App Control / WDAC 阻止了无签名的 mitmdump.exe**。v1.4.0 起脚本已自动规避（改用有签名的 python.exe 以 `-c` 方式拉起 mitmdump，实测不再被拦）——看到此错说明用的是旧版脚本，更新 `auto_capture.py` 即可；仍被拦则检查系统「Smart App Control」是否开启（Windows 安全中心 → 应用和浏览器控制） |
-| 模拟器上不了网 | 代理残留：**直接双击 `tools/restore_proxy.bat` 一键清代理 + 停 mitmdump**；手动命令为 `adb shell settings delete global http_proxy` + 删除 `global_http_proxy_host` / `global_http_proxy_port`。**严禁用 `settings put global http_proxy :0`**（空值会让 FGO 直连 443，抓不到包） |
+| 模拟器上不了网 | 代理残留：**直接双击 `tools/restore_proxy.bat` 一键清代理 + 停 mitmdump**；手动命令为 `adb shell settings delete global http_proxy` + 删除 `global_http_proxy_host` / `global_http_proxy_port`。**严禁用 `settings put global http_proxy :0`**（空值会让 FGO 直连 443，抓不到包）。若上次抓包后窗口提示过「清理未完成/守护未执行清理」，即为该场景的提前告知 |
 | 提示「剪贴板复制失败」 | 8MB 大文本偶发复制失败：改用 Chaldea「从文件」导入 `toplogin/` 目录里最新的 json，不影响结果 |
-| 抓包成功后 CMD 窗口一直不关 | **设计如此**：窗口保持到 FGO 彻底退出、代理还原后才自动关闭（后台清理守护在干活，控制台有进度行）。想提前关可直接关，不影响守护继续清理 |
+| 抓包成功后 CMD 窗口一直不关 | **设计如此**：窗口保持到 FGO 彻底退出、代理还原后才自动关闭（后台清理守护在干活，控制台有进度行）。想提前关可直接关，不影响守护继续清理。**先关了模拟器也没事**：守护会识别设备离线并等待恢复（≤10 分钟），重开模拟器后继续等 FGO 退出再清理 |
 | 弹「已有抓包流程正在运行中」 | 单实例保护（命名互斥体）：同时只允许一个抓包流程。确认没有别的在跑就等几秒再试；进程被杀后锁自动释放，无需手动清理 |
 | toplogin 目录里旧 json 去哪了 | 设计只保留最新一次抓包结果：addon 落盘前清空旧 json，主脚本成功路径再兜底删一次 |
-| 异常后行为怪异、日志难定位；或想看抓包等待/清理过程 | 看 `tools/run.log`：统一异常日志（时间戳 + traceback），抓包成功后还会记录 `[wait]` 等待与清理生命周期（守护何时退出、等了多久），把末尾内容贴给维护者 |
+| 异常后行为怪异、日志难定位；或想看抓包等待/清理过程 | 看 `tools/run.log`：统一异常日志（时间戳 + traceback），抓包成功后还会记录 `[wait]` 等待与清理生命周期（守护何时退出、等了多久）及 `[daemon]` 守护侧明细（设备离线等待/读回校验/放弃清理），把末尾内容贴给维护者 |
 | mitmdump 启动失败 | `pip install -r tools/requirements.txt`，确认 `mitmdump --version` 可运行 |
 | **窗口刷屏「'xxx' 不是内部或外部命令，也不是可运行的程序或批处理文件」** | 批处理被编辑器存成了 **LF 换行**（Unix）。cmd.exe 的批处理解析器只认 **CRLF**，LF 会把行切错、`goto` / `for` 全部失效，于是每一行都报这个错。修复：换行符改回 CRLF——VS Code 右下角把 `LF` 切成 `CRLF`，或 `python -c "p=r'tools/一键抓包.bat';d=open(p,'rb').read().replace(b'\r\n',b'\n').replace(b'\n',b'\r\n');open(p,'wb').write(d)"`。**改动所有 `.bat` / `.cmd` 文件（含 `find_python.cmd` / `restore_proxy.bat`）后务必确认仍是 CRLF** |
 | **Quicker 触发毫无反应（连 cmd 窗口都不出现）** | 工程在映射盘（如 `X:\`）上、而 Quicker 以**管理员身份**运行时：`net use` 建的盘符只属于非提权会话，提权上下文里 `X:` 根本不存在，ShellExecute 找不到文件 → 静默失败、Quicker 也不报错。两条路：① 放一个**本地启动器** `FGOcap_launch.cmd`（放在本地盘，Quicker 第 1 步指向它）：先 `if not exist` 判断目标，缺失就自己 `net use X: \\nas\share`，再 `call` 真正的 bat，并把每次运行写进日志，便于事后定位；② 导入 `EnableLinkedConnections=1`（`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System`，DWORD）后**重启**，让映射盘对提权进程可见，之后 Quicker 可直连 `X:\...` |
