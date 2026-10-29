@@ -67,6 +67,52 @@ def log_exc(msg="", exc=None):
         pass
 
 
+# mitmdump 入口函数的 -c 引导串（与 entry_points.txt 的
+# mitmdump = mitmproxy.tools.main:mitmdump 一致；sys.argv[1:] 由
+# start_mitmdump() 后续追加的参数天然填充）
+_MITMDUMP_BOOTSTRAP = (
+    "import sys; from mitmproxy.tools.main import mitmdump; sys.exit(mitmdump())"
+)
+
+
+def _python_for_mitmdump(mitmdump_exe):
+    """给 mitmdump 找一个能 import mitmproxy 的 python.exe。
+
+    背景：Smart App Control / WDAC 会阻止未签名的 mitmdump.exe
+    （Popen 抛 WinError 4551「应用程序控制策略已阻止此文件」），
+    而 python.exe 自带有效签名（Python Software Foundation）受信任。
+    逐个候选跑一次 import 冒烟验证，返回第一个可用的完整路径；
+    全部不可用返回 None（调用方回退直接 exe）。
+    """
+    import shutil
+    p = Path(mitmdump_exe)
+    candidates = [
+        p.parent.parent / "python.exe",      # Scripts/ 的上一级 = Python 安装根
+        p.parent / "python.exe",
+        Path(sys.executable),
+    ]
+    w = shutil.which("python")
+    if w:
+        candidates.append(Path(w))
+    seen = set()
+    for c in candidates:
+        cs = str(c)
+        if cs in seen or not c.is_file():
+            continue
+        seen.add(cs)
+        try:
+            r = subprocess.run(
+                [cs, "-c", "from mitmproxy.tools.main import mitmdump"],
+                capture_output=True, timeout=60,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            if r.returncode == 0:
+                return cs
+        except Exception:
+            continue
+    return None
+
+
 def resolve_mitmdump():
     """返回 mitmdump 启动命令（列表）。
 
@@ -75,28 +121,44 @@ def resolve_mitmdump():
       2) PATH 中的 mitmdump / mitmdump.exe
       3) Python 同目录的 Scripts/mitmdump.exe（pip install 后落这里，但通常不在 PATH）
       4) 仍找不到：抛 FileNotFoundError（main 弹窗会给出修复指引）
+
+    SAC/WDAC 规避（2026-10-29）：找到 exe 后不直接返回它，而是优先包装成
+    「有签名的 python.exe + -c 入口函数」——mitmdump.exe 无签名，会被
+    Smart App Control 直接 block（Popen WinError 4551）；python.exe 有
+    PSF 有效签名受信任，import mitmproxy 与监听端口均实测不受影响。
+    找不到可用 python（或 import 冒烟失败）时回退直接 exe（老行为）。
     """
     local = TOOLS_DIR / "mitmproxy-12.2.3" / "mitmdump.exe"
     if local.is_file():
-        return [str(local)]
-    import shutil
-    for name in ("mitmdump.exe", "mitmdump"):
-        p = shutil.which(name)
-        if p:
-            return [p]
-    # pip install mitmproxy 后的可执行文件在 Python 同目录的 Scripts/，
-    # 但 Windows 默认不会把这个目录加到 PATH → shutil.which 找不到，
-    # 必须手动到这个目录找（这是绝大多数新用户的实际情况）
-    scripts_dir = Path(sys.executable).parent / "Scripts"
-    for name in ("mitmdump.exe", "mitmdump"):
-        p = scripts_dir / name
-        if p.is_file():
-            return [str(p)]
-    raise FileNotFoundError(
-        "未找到 mitmdump 可执行文件！请二选一：\n"
-        "  1) pip install mitmproxy（推荐）\n"
-        "  2) 解压官方版 mitmproxy 12.2.3 到 tools/mitmproxy-12.2.3/"
-    )
+        found = local
+    else:
+        import shutil
+        found = None
+        for name in ("mitmdump.exe", "mitmdump"):
+            p = shutil.which(name)
+            if p:
+                found = Path(p)
+                break
+        if found is None:
+            # pip install mitmproxy 后的可执行文件在 Python 同目录的 Scripts/，
+            # 但 Windows 默认不会把这个目录加到 PATH → shutil.which 找不到，
+            # 必须手动到这个目录找（这是绝大多数新用户的实际情况）
+            scripts_dir = Path(sys.executable).parent / "Scripts"
+            for name in ("mitmdump.exe", "mitmdump"):
+                p = scripts_dir / name
+                if p.is_file():
+                    found = p
+                    break
+    if found is None:
+        raise FileNotFoundError(
+            "未找到 mitmdump 可执行文件！请二选一：\n"
+            "  1) pip install mitmproxy（推荐）\n"
+            "  2) 解压官方版 mitmproxy 12.2.3 到 tools/mitmproxy-12.2.3/"
+        )
+    py = _python_for_mitmdump(found)
+    if py:
+        return [py, "-c", _MITMDUMP_BOOTSTRAP]
+    return [str(found)]
 
 
 # 惰性解析：不在模块导入时跑（避免 resolve_mitmdump 抛错导致整个模块 import 失败、

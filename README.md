@@ -115,7 +115,7 @@ tools/__pycache__/         ← Python 字节码缓存（自动生成）
 | # | 项目 | 操作 | 验证 |
 |---|---|---|---|
 | 1 | 真实 Python | python.org 安装包，勾 **Add to PATH**（`find_python.cmd` 会自动跳过商店桩，此项主要为手动终端着想）；关闭应用执行别名的 python 桩 | `where python` 第一行非 WindowsApps |
-| 2 | mitmproxy | `pip install -r tools/requirements.txt` | `mitmdump --version` 有输出 |
+| 2 | mitmproxy | `pip install -r tools/requirements.txt` | `python -c "from mitmproxy.tools.main import mitmdump"` 无报错（SAC 环境下 `mitmdump --version` 会被拦，别用它验证） |
 | 3 | 雷电模拟器 | 安装位置任意（脚本按盘符自动扫）；建议把安装目录加入 PATH | `where adb` 命中模拟器目录 |
 | 4 | ROOT 权限 | `ldconsole modify --index 0 --root 1` + `ldconsole reboot --index 0` | `adb shell su -c id` 返回 `uid=0(root)` |
 | 5 | 重开终端 | PATH 是进程启动时读取的，改完 PATH 必须**重开终端**再跑脚本 | — |
@@ -175,6 +175,7 @@ package=com.bilibili.fgo.qihoo
 | 弹「CA 写入模拟器失败」但 root 已开 | 老版本脚本的 `su -c` 引号 bug（2026-09-13 已修复），更新 `auto_capture.py` 即可；或手动装：`adb push %USERPROFILE%\.mitmproxy\mitmproxy-ca-cert.pem /data/local/tmp/c8750f0d.0` 后 `adb shell "su -c 'cp /data/local/tmp/c8750f0d.0 /system/etc/security/cacerts/'"` + `chmod 644` + 重启模拟器 |
 | 弹「未找到模拟器 adb」 | 模拟器未装或不在常见路径：确认已装雷电并开机；或把安装目录加入 PATH 后**重开终端** |
 | 弹「未找到 mitmdump 可执行文件」 | 未装 mitmproxy：`pip install -r tools/requirements.txt`；装完重开终端 |
+| 弹「抓包服务未能监听端口 18080：Popen 失败 [WinError 4551]」 | **Smart App Control / WDAC 阻止了无签名的 mitmdump.exe**。v1.4.0 起脚本已自动规避（改用有签名的 python.exe 以 `-c` 方式拉起 mitmdump，实测不再被拦）——看到此错说明用的是旧版脚本，更新 `auto_capture.py` 即可；仍被拦则检查系统「Smart App Control」是否开启（Windows 安全中心 → 应用和浏览器控制） |
 | 模拟器上不了网 | 代理残留：**直接双击 `tools/restore_proxy.bat` 一键清代理 + 停 mitmdump**；手动命令为 `adb shell settings delete global http_proxy` + 删除 `global_http_proxy_host` / `global_http_proxy_port`。**严禁用 `settings put global http_proxy :0`**（空值会让 FGO 直连 443，抓不到包） |
 | 提示「剪贴板复制失败」 | 8MB 大文本偶发复制失败：改用 Chaldea「从文件」导入 `toplogin/` 目录里最新的 json，不影响结果 |
 | 抓包成功后 CMD 窗口一直不关 | **设计如此**：窗口保持到 FGO 彻底退出、代理还原后才自动关闭（后台清理守护在干活，控制台有进度行）。想提前关可直接关，不影响守护继续清理 |
