@@ -28,6 +28,7 @@
 【P1-5】清代理统一复用 auto_capture.clear_proxy；停 mitmdump 按端口 PID 精确清理。
 """
 import os
+import re
 import subprocess
 import sys
 import time
@@ -106,22 +107,100 @@ def _clear_proxy_verified(adb, serial):
     return False
 
 
+def _parent_alive(pid):
+    """探测父进程（主脚本）是否还活着。
+
+    【2026-11-01 关窗即全收】主脚本比守护先退出只可能是三种情况：
+    用户关掉 CMD 窗口 / 任务管理器杀进程 / 崩溃——全部都意味着"该收工了"。
+    Windows 实现：OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) + GetLastError；
+    非 Windows 平台（测试替身）退化为 os.kill(pid, 0) 探测。
+    """
+    if pid is None or pid <= 0:
+        return True   # 没给父 PID（旧版主脚本调用）→ 视为永远活着，保持老行为
+    try:
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        h = ctypes.windll.kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not h:
+            return False   # 打不开：进程已不存在（或权限外，对本场景等价死亡）
+        try:
+            code = ctypes.c_ulong()
+            ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(code))
+            return code.value == STILL_ACTIVE
+        finally:
+            ctypes.windll.kernel32.CloseHandle(h)
+    except AttributeError:
+        # 非 Windows：os.kill(pid, 0) 存活探测
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+    except Exception:
+        return True   # 探测本身失败：宁可不触发全收（正常路径兜底）
+
+
+def _quit_emulator(adb_path, serial):
+    """关闭整个模拟器（ldconsole quit）。返回 True = 命令已发出。
+
+    serial 形如 emulator-5554 → index = (5554-5554)//2 = 0（LDPlayer 惯例：
+    5554/5556/5558… 依次对应 index 0/1/2）。ldconsole 与 adb 同目录。
+    """
+    try:
+        m = re.match(r"emulator-(\d+)", serial)
+        if not m:
+            _log(f"无法从 serial {serial!r} 推断模拟器 index，跳过关模拟器")
+            return False
+        index = (int(m.group(1)) - 5554) // 2
+        ldc = os.path.join(os.path.dirname(os.path.abspath(adb_path)),
+                           "ldconsole.exe")
+        if not os.path.isfile(ldc):
+            _log(f"未找到 {ldc}，跳过关模拟器（请手动关闭）")
+            return False
+        for attempt in (1, 2):
+            subprocess.run([ldc, "quit", "--index", str(index)],
+                           timeout=30, creationflags=subprocess.CREATE_NO_WINDOW)
+            time.sleep(3)
+            rc, _ = ac.adb_shell(adb_path, ["echo", "probe"], serial,
+                                 timeout=10, return_rc=True)
+            if rc != 0:
+                _log(f"模拟器已关闭（ldconsole quit index={index}）")
+                return True
+            _log(f"模拟器仍在运行，重试 ldconsole quit（第 {attempt}/2 次）")
+        _log("ldconsole quit 两次后模拟器仍在运行，请手动关闭")
+        return False
+    except Exception as e:
+        _log(f"关模拟器异常：{e}")
+        return False
+
+
 def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
     if len(argv) < 4:
         return RC_FAILED
     adb, serial, pkg, port = argv[0], argv[1], argv[2], argv[3]
+    parent_pid = int(argv[4]) if len(argv) >= 5 else None
     _kill_old_instances(serial)
 
     # 最多守护 8 小时，避免用户忘了关 FGO 时永久残留
     deadline = time.time() + 8 * 3600
     offline_since = None
+    parent_gone = False
     while time.time() < deadline:
+        # 【2026-11-01 关窗即全收】主脚本（父进程）死了 = 用户关了 CMD 窗口
+        # → 直接收工：清代理 + 停 mitmdump + 关模拟器（不等 FGO 退出）
+        if parent_pid and not _parent_alive(parent_pid):
+            parent_gone = True
+            _log("检测到主脚本已退出（CMD 窗口被关闭/进程被杀），执行收工："
+                 "清代理 → 停 mitmdump → 关闭模拟器")
+            break
         state = _probe_fgo(adb, serial, pkg)
         if state == "running":
             offline_since = None
-            time.sleep(10)
+            time.sleep(3)
             continue
         if state == "offline":
             # 【2026-10-29】设备离线 ≠ FGO 退出：模拟器被关/崩溃/adb 抖动时
@@ -133,6 +212,7 @@ def main(argv=None):
             elif time.time() - offline_since > OFFLINE_GRACE:
                 _log(f"设备离线超过宽限期（{OFFLINE_GRACE} 秒）未恢复，放弃清理"
                      "（代理可能残留在模拟器中，开模拟器后运行 一键抓包-恢复.bat）")
+                ac._kill_by_port(port)
                 return RC_OFFLINE
             time.sleep(OFFLINE_POLL)
             continue
@@ -143,10 +223,17 @@ def main(argv=None):
         _log("代理清除失败：http_proxy 仍有残留，请手动运行 一键抓包-恢复.bat")
         # mitmdump 是 PC 侧进程（taskkill 按端口），与设备在否无关，照杀
         ac._kill_by_port(port)
+        if parent_gone:
+            _quit_emulator(adb, serial)
         return RC_FAILED
 
     # 2) 停 mitmdump（netstat 按端口 PID 精确清理，含其子进程）
     ac._kill_by_port(port)
+
+    # 3)【2026-11-01 关窗即全收】父进程死亡触发的收工：把模拟器也关掉
+    if parent_gone:
+        _quit_emulator(adb, serial)
+        return RC_OK
     _log("清理完成：代理已删除（读回确认 null）、mitmdump 已停止")
     return RC_OK
 

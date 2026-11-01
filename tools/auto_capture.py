@@ -1560,7 +1560,8 @@ def main():
                 timeout=15, creationflags=subprocess.CREATE_NO_WINDOW,
             )
             daemon_proc = subprocess.Popen(
-                [pythonw, str(daemon_py), _adb, _serial, _pkg, str(PORT)],
+                [pythonw, str(daemon_py), _adb, _serial, _pkg, str(PORT),
+                 str(os.getpid())],
                 creationflags=(
                     subprocess.DETACHED_PROCESS
                     | subprocess.CREATE_NEW_PROCESS_GROUP
@@ -1586,7 +1587,7 @@ def main():
     # 代理还原之后（提前关窗口不影响后台守护继续清理）。
     if daemon_proc is not None:
         print("[*] FGO 保持在线，本窗口将保持到 FGO 退出且代理还原后自动关闭", flush=True)
-        print("[*] 提前手动关窗口不影响后台守护继续清理", flush=True)
+        print("[*] 想直接收工？关掉本窗口即可：守护会自动清代理、停 mitmdump、关闭模拟器", flush=True)
         try:
             with open(RUN_LOG, "a", encoding="utf-8") as _f:
                 _f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [wait] 主脚本开始等待清理守护（FGO 保持在线）\n")
