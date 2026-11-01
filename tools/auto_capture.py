@@ -1586,8 +1586,9 @@ def main():
     except Exception as e:
         print(f"[!] 清理守护启动失败（可手动清代理）：{e}", flush=True)
 
-    # 【2026-10-24】主脚本等守护干完活再退出：CMD 窗口保持到 FGO 彻底关闭、
-    # 代理还原之后（提前关窗口不影响后台守护继续清理）。
+    # 【2026-11-01】交棒成功：主脚本等待守护退出——正常路径下 FGO 自行退出后，
+    # 守护清代理 + 停 mitmdump（模拟器保留）；若用户关掉 CMD 窗口（父进程死亡），
+    # 守护 ≤3s 内触发「全收」：清代理 + 停 mitmdump + 关闭整个模拟器。
     if daemon_proc is not None:
         print("[*] FGO 保持在线，本窗口将保持到 FGO 退出且代理还原后自动关闭", flush=True)
         print("[*] 想直接收工？关掉本窗口即可：守护会自动清代理、停 mitmdump、关闭模拟器", flush=True)
