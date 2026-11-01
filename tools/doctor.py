@@ -162,7 +162,8 @@ def check_proxy(rep, adb, serial):
         rep.add(OK, "代理状态", "干净（无残留）")
     else:
         rep.add(WARN, "代理状态", f"有残留 http_proxy={cur}",
-                "双击「一键抓包-恢复.bat」清干净（或等 FGO 退出后守护自动清）")
+                "双击「一键抓包-恢复.bat」清干净（或等 FGO 退出后守护自动清；"
+                "若抓包窗口还开着，直接关掉它即自动全收）")
 
 
 def check_port(rep):

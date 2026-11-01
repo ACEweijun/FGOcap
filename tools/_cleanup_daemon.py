@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """FGO 抓包清理守护（detached 后台运行）
 
-使命：抓包成功后主脚本直接退出（**不删代理、不杀 mitmdump、不动 FGO**），
-由本守护在后台等 FGO 退出，再清代理 + 停 mitmdump。
+使命：抓包成功后**不删代理、不杀 mitmdump、不动 FGO**（避免切断游戏
+连接），由本守护在后台等收工信号，再清代理 + 停 mitmdump（+ 视信号
+类型关闭模拟器）。主脚本保持 CMD 窗口等待本守护退出。
 
 为什么需要它：
   抓包时代理生效，FGO 游戏中保持长连接。如果在 FGO 还活着时删代理，
@@ -10,7 +11,15 @@
   故改为"等 FGO 自己退出后再清理"——FGO 全程无感、不重启、不断线。
 
 用法（由 auto_capture.py 自动拉起，无需手动）：
-  pythonw _cleanup_daemon.py <adbPath> <serial> <fgoPkg> <port>
+  pythonw _cleanup_daemon.py <adbPath> <serial> <fgoPkg> <port> [parentPid]
+  parentPid = 主脚本 PID（第 5 参数，可选）：传入后启用「关窗即全收」。
+
+【2026-11-01 关窗即全收】
+  守护每轮同时探测父进程（主脚本）存活。主脚本比守护先退出只可能是
+  用户关掉 CMD 窗口 / 进程被杀 / 崩溃——全部等价"该收工"，立即触发
+  全收：清代理（读回校验）→ 停 mitmdump → ldconsole quit 关闭整个
+  模拟器（顺序不可颠倒：清代理必须发生在模拟器还活着时）。
+  正常路径（FGO 自己退出）不关模拟器，行为同前。
 
 【2026-10-29 重构：状态机 + 验证驱动】
   1) 查询语义化：pidof 带返回码，区分「FGO 已退出」（rc=0 且输出空）
