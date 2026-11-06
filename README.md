@@ -81,7 +81,7 @@ AIGC:
 | `tools/requirements.txt` | Python 依赖（mitmproxy） |
 | `tools/toplogin/` | 抓包输出（只保留最新一次；**含账号登录信息，切勿外传**） |
 | `tools/mitmdump.log` | 全量流量日志，"抓不到"先看它 |
-| `tools/run.log` | 统一异常日志 + `[wait]` / `[daemon]` 生命周期 |
+| `tools/run.log` | 统一异常日志 + `[wait]` / `[daemon]` 生命周期（**放在 NAS 上时历史文件受写保护，新日志可能写不进**——排障以本地副本为准） |
 | `tools/.wait_phase.tmp` / `.wait_signal.tmp` | 进度弹窗状态 / 取消信号 |
 | 根目录 `README.md` / `LICENSE` / `.gitignore` | 说明 / MIT 许可 / 忽略规则 |
 

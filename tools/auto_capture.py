@@ -217,10 +217,6 @@ def msg(text, title="FGO 一键抓包", style=MB_OK | MB_ICONINFO | MB_SYSTEMMOD
     return ctypes.windll.user32.MessageBoxW(None, text, title, style)
 
 
-def info(text):
-    msg(text)
-
-
 def warn(text):
     msg(text, style=MB_OK | MB_ICONWARN | MB_SYSTEMMODAL | MB_TOPMOST)
 

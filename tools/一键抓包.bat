@@ -1,5 +1,5 @@
 @echo off
-rem 职责：入口 A（含抓包）→ auto_capture.py；CMD 窗口保持，关窗即全收
+rem 职责：入口 A（含抓包）→ auto_capture.py；CMD 窗口保持，关窗即全收、关模拟器即离线收工
 chcp 65001 >nul
 title FGO Auto Capture
 cd /d "%~dp0"

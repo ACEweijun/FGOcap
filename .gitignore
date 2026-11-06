@@ -10,8 +10,7 @@ toplogin/
 # 日志 / 临时文件
 *.log
 *.tmp
-wait_popup_err.log
-auto_run.log
+tools/config.ini
 
 # 第三方二进制 / 安装包（体积大，让用户自行安装）
 tools/mitmproxy-12.2.3/
