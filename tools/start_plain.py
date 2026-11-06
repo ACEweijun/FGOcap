@@ -51,7 +51,8 @@ def main():
     boot.start_fgo(adb, serial)
     pkg = ac.resolve_fgo_package(adb, serial)
     rc = boot.spawn_daemon_and_wait(adb, serial, pkg)
-    return 0 if rc == 0 else rc
+    # rc=2（设备离线收工）是正常收工：返回非 0 会让 bat 执行 pause 卡住窗口
+    return 0 if rc in (0, 2) else rc
 
 
 if __name__ == "__main__":

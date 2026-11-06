@@ -8,19 +8,23 @@
 用法（由公共模块自动拉起，无需手动）：
   pythonw _cleanup_daemon.py <adbPath> <serial> <fgoPkg> <port> [parentPid]
 
-两条收工路径：
+三条收工路径：
   1) FGO 自己退出 → 清代理（读回校验）+ 停 mitmdump，模拟器保留。
   2) 主脚本先死（关 CMD 窗口 / 被杀 / 崩溃）→「关窗即全收」：
      清代理（读回校验）→ 停 mitmdump → ldconsole quit 关闭整个模拟器。
      顺序不可颠倒：清代理必须在模拟器还活着时执行，关掉就清不进去了。
+  3) 设备离线（模拟器被关 / 崩溃）→「离线即收工」：立即停 mitmdump 并退出，
+     CMD 窗口随之关闭。此时 adb 通道已断，清代理物理上不可能；残留代理由
+     下次开机入口无条件清除并读回校验，无需守护等待设备回来。
 
 状态机与校验：
-  - pidof 带返回码区分「FGO 已退出」与「设备不可达」；后者等待设备回来
-    （宽限期 10 分钟），超时才放弃，避免清理命令发不出去却报成功的假清理。
+  - pidof 带返回码区分「FGO 已退出」与「设备不可达」；后者绝不执行清代理，
+    避免清理命令发不出去却报成功的假清理。
   - 删完代理必须读回确认为空/null，非空重试 3 轮。
   - 启动时按命令行匹配杀掉同 serial 的旧守护（必须排除自身 PID）。
 
-退出码：0 = 清理成功且读回验证通过；2 = 设备离线超宽限期未清理；3 = 清理后仍有残留。
+退出码：0 = 清理成功且读回验证通过；2 = 设备离线，未清代理（交下次开机兜底）；
+        3 = 清理后仍有残留。
 """
 import os
 import re
@@ -33,11 +37,8 @@ import auto_capture as ac
 
 # 退出码（与 auto_capture.py 成功路径的消费逻辑对应）
 RC_OK = 0            # 清理成功且已读回验证
-RC_OFFLINE = 2       # 设备离线超过宽限期未恢复，未执行清理
+RC_OFFLINE = 2       # 设备离线，未清代理（残留交下次开机兜底）
 RC_FAILED = 3        # 执行了清理但代理仍有残留
-
-OFFLINE_GRACE = 600  # 设备离线后等它回来的最长时间（秒）
-OFFLINE_POLL = 30    # 设备离线期间的轮询间隔（秒）
 
 
 def _log(msg):
@@ -182,7 +183,6 @@ def main(argv=None):
 
     # 最多守护 8 小时，避免用户忘了关 FGO 时永久残留
     deadline = time.time() + 8 * 3600
-    offline_since = None
     parent_gone = False
     while time.time() < deadline:
         # 主脚本（父进程）死了 = 用户关了 CMD 窗口
@@ -194,23 +194,14 @@ def main(argv=None):
             break
         state = _probe_fgo(adb, serial, pkg)
         if state == "running":
-            offline_since = None
             time.sleep(3)
             continue
         if state == "offline":
-            # 设备离线 ≠ FGO 退出：模拟器被关/崩溃/adb 抖动时
-            # pidof 同样查不到，旧版误判为退出 → clear_proxy 的 adb 命令同样
-            # 失败 → 清理从未发生却报 code=0。现等设备回来再继续判断。
-            if offline_since is None:
-                offline_since = time.time()
-                _log(f"设备离线/不可达，等待模拟器恢复（宽限期 {OFFLINE_GRACE} 秒）")
-            elif time.time() - offline_since > OFFLINE_GRACE:
-                _log(f"设备离线超过宽限期（{OFFLINE_GRACE} 秒）未恢复，放弃清理"
-                     "（代理可能残留在模拟器中，开模拟器后运行 一键抓包-恢复.bat）")
-                ac._kill_by_port(port)
-                return RC_OFFLINE
-            time.sleep(OFFLINE_POLL)
-            continue
+            # adb 通道已断，清代理发不进去；残留交下次开机入口兜底。
+            _log("设备离线（模拟器已关闭/不可达），离线即收工：停 mitmdump，"
+                 "代理残留交下次开机脚本清除")
+            ac._kill_by_port(port)
+            return RC_OFFLINE
         break  # gone：设备在线且 FGO 已退出 → 执行清理
 
     # 1) 清代理三条 + 读回校验（失败重试 3 轮）

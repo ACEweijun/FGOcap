@@ -132,7 +132,10 @@ def start_fgo(adb, serial):
 
 
 def spawn_daemon_and_wait(adb, serial, pkg, on_handoff=None):
-    """拉起清理守护并挂住 CMD 窗口直到守护退出。窗口被关 = 守护自动全收。"""
+    """拉起清理守护并挂住 CMD 窗口直到守护退出。
+
+    窗口被关 = 守护自动全收；设备离线 = 守护立即收工（窗口随之关闭）。
+    """
     pythonw = sys.executable.replace("python.exe", "pythonw.exe")
     if not Path(pythonw).is_file():
         pythonw = "pythonw"
@@ -186,8 +189,8 @@ def spawn_daemon_and_wait(adb, serial, pkg, on_handoff=None):
         else:
             print("[✓] 环境已还原，全部完成", flush=True)
     elif rc == 2:
-        print("[!] 模拟器离线超过 10 分钟，守护未执行清理", flush=True)
-        print("[!] 下次开机脚本会自动清残留代理", flush=True)
+        print("[*] 检测到模拟器已关闭，守护已收工（mitmdump 已停止）", flush=True)
+        print("[*] 代理残留由下次开机脚本自动清除", flush=True)
     else:
         print(f"[!] 清理未完成（守护退出码 {rc}）", flush=True)
         print("[!] 可运行 tools/一键抓包-恢复.bat 手动清代理 + 停 mitmdump", flush=True)
