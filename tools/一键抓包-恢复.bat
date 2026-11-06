@@ -1,4 +1,5 @@
 @echo off
+rem 职责：手动恢复环境（清代理 + 停 mitmdump）→ restore.py
 chcp 65001 >nul
 title FGO Restore
 cd /d "%~dp0"

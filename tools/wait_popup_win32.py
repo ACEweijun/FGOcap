@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-wait_popup_win32.py — 纯 ctypes 原生 Win32 弹窗（无外部依赖）
+职责：Win32 进度弹窗（独立进程，按 PhaseFile / SignalFile 通信）。
 
 用途（独立进程）：
     pythonw wait_popup_win32.py -Message "..." -SignalFile "..."

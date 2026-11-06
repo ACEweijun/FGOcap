@@ -1,4 +1,5 @@
 @echo off
+rem 职责：环境自检（只读）→ doctor.py
 chcp 65001 >nul
 title FGO Doctor
 cd /d "%~dp0"

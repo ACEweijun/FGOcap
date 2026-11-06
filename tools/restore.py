@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-FGO 一键抓包 · 环境恢复（Restore）
+职责：环境恢复（清代理 + 停 mitmdump，可选卸载 CA / 强停 FGO）。
 
 用法：
     python restore.py                  清代理 + 停 mitmdump（最常用）
@@ -20,7 +20,7 @@ import time
 
 import auto_capture as ac
 
-# 【P1-5】清代理统一走 auto_capture.clear_proxy（原 PROXY_CMDS 手工列表已删除）
+# 清代理统一走 auto_capture.clear_proxy（原 PROXY_CMDS 手工列表已删除）
 
 
 def main():

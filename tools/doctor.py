@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-FGO 一键抓包 · 环境自检（Doctor）
+职责：环境自检（全程只读，输出阻塞项；--json 供脚本消费）。
 
 用法：
     python doctor.py            人工看（双击「一键抓包-自检.bat」等价）

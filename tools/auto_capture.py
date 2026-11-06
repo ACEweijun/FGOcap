@@ -1,27 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-FGO 国服一键抓包（自动版）
-=========================
-设计目标：全程零交互 —— 触发后到抓包完成，用户无需任何键盘/鼠标操作。
+职责：FGO 一键抓包的主入口，即含抓包的开机脚本 A。
+入口：tools/一键抓包.bat（Quicker 动作 A）。
 
-流程：
-  [1/5] 自动定位模拟器 adb（glob 匹配 LDPlayer*/adb.exe，兼容雷电 9/12/14）
-  [2/5] 等待模拟器就绪（boot_completed）
-  [3/5] 清理上一轮残留代理（三条 settings delete，绝不用 `:0`）
-  [4/5] 启动 mitmdump（:18080）+ 自动安装 mitmproxy CA
-        （未信任时 root 写入系统库；Android 14 写 APEX+legacy 双库，
-          Android 9 为 system-as-root 需 remount `/` 而非 `/system`）
-  [5/5] 设置代理并自检（读回校验，最多 3 轮；全败则报错退出，
-        绝不带失效代理启动 FGO）+ 冷启动 FGO（force-stop + am start）
-  等待期：自动点击屏幕中央帮用户点【登录】（每 1.5s，默认 90s 窗口，
-        抓到 toplogin 立即停；超时未抓到则结束脚本）
-  成功：toplogin JSON 自动复制剪贴板 → 导入 Chaldea。**不弹窗、不开文件夹**，
-        CMD 窗口保持到 FGO 彻底退出、代理还原后才自动关闭；
-        **中途直接关掉 CMD 窗口 = 一键收工**——守护自动清代理、停
-        mitmdump、关闭整个模拟器（约 3~10 秒，全程后台）
-  收尾：成功路径**不删代理、不停 mitmdump、不动 FGO**（避免切断游戏连接），
-        改由 _cleanup_daemon.py 守护，等 FGO 退出后自动还原环境；
-        守护同时监视主脚本存活，窗口被关/主脚本死亡即触发全收
+流程：启动/定位模拟器 → 等 boot_completed → 检测并清除残留代理（三条 key 读回校验）
+      → 启 mitmdump + 装 CA → 设代理并自检 → 冷启动 FGO + 自动点登录
+      → toplogin JSON 落盘并复制剪贴板 → 交棒清理守护、挂住 CMD 窗口。
+
+另一个开机入口：tools/start_plain.py（一键开机-不抓包.bat，脚本 B），不设代理、不抓包。
+两者共用 tools/boot_common.py 的前置（启动模拟器、清残留、拉守护）、同一个清理守护
+和同一个单实例互斥体，因此不会同时运行。
+
+关键约束：
+  - 清代理必须在模拟器在线时执行；严禁 settings put global http_proxy :0
+    （空值会让 FGO 直连 443，抓不到包）。
+  - 成功路径不删代理、不停 mitmdump、不动 FGO：清代理会切断游戏连接，
+    环境还原交给 _cleanup_daemon.py 在 FGO 退出后执行。
+  - CMD 窗口保持到守护退出；关掉窗口 = 守护触发「全收」（清代理 + 停 mitmdump
+    + 关闭整个模拟器）。
 
 用法：双击「一键抓包.bat」或用 Quicker 运行它。任何一步失败都会弹窗说明原因。
 单实例：命名互斥体防重入——已有抓包在运行时会直接提示并退出。
@@ -59,7 +55,7 @@ RUN_LOG = TOOLS_DIR / "run.log"
 
 
 def log_exc(msg="", exc=None):
-    """统一异常日志：追加写入 tools/run.log（【P2-13】替换静默 except）。"""
+    """统一异常日志：追加写入 tools/run.log（替换静默 except）。"""
     try:
         with open(RUN_LOG, "a", encoding="utf-8") as f:
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
@@ -238,7 +234,7 @@ def error(text):
 # ---------------------------------------------------------------------------
 def find_adb():
     """探测模拟器 adb 路径，返回第一个存在的。"""
-    # 【2026-09-13 扩展】重装系统后雷电安装盘符/路径会变（实测 G:\leidian →
+    # 重装系统后雷电安装盘符/路径会变（实测 G:\leidian →
     # D:\software\leidian），因此按盘符扫两级常见位置：
     #   <盘>:\leidian\LDPlayer*\adb.exe 与 <盘>:\software\leidian\LDPlayer*\adb.exe
     # glob 默认字典序，绝大多数情况只装一个，命中即返回
@@ -267,10 +263,7 @@ def find_adb():
 
 
 def adb_shell(adb, args, serial=None, timeout=60, return_rc=False):
-    """调用 adb shell 执行一条命令。
-
-    【P1-7】调用方统一不再传 'shell' 前缀（历史曾出现 `shell shell` 冗余，
-    旧版用自动剥离兼容；现已清理全部调用点，剥离分支删除）。
+    """调用 adb shell 执行一条命令（args 不含 'shell' 前缀）。
 
     return_rc=True 时返回 (rc, stdout)：守护据此区分「设备不可达」
     （adb 命令本身失败，rc≠0：模拟器被关/崩溃/adb 抖动）与「命令成功但
@@ -305,7 +298,7 @@ def adb_shell(adb, args, serial=None, timeout=60, return_rc=False):
 
 
 def clear_proxy(adb, serial):
-    """【P1-5 公共函数】删除模拟器全局代理三条 key（老 API + 新 API）。
+    """删除模拟器全局代理三条 key（老 API + 新 API）。
 
     严禁用 `settings put global http_proxy :0` 清空（历史回归令 FGO 直连 443），
     只允许 delete 彻底清除。
@@ -319,7 +312,7 @@ def clear_proxy(adb, serial):
 
 
 def set_proxy(adb, serial, ip, port):
-    """【P1-6 公共函数】设置模拟器全局代理三条 key（老 API + 新 API 双写）。"""
+    """设置模拟器全局代理三条 key（老 API + 新 API 双写）。"""
     adb_shell(adb, ["settings", "put", "global", "http_proxy", f"{ip}:{port}"],
               serial, timeout=15)
     adb_shell(adb, ["settings", "put", "global", "global_http_proxy_host", ip],
@@ -329,11 +322,11 @@ def set_proxy(adb, serial, ip, port):
 
 
 def _kill_by_port(port):
-    """【P1-10】netstat -ano 按端口找 LISTENING PID，taskkill /PID /T 精确清理。
+    """netstat -ano 按端口找 LISTENING PID，taskkill /PID /T 精确清理。
 
     替代 taskkill /IM mitmdump.exe：/IM 全杀会误伤其它同名进程。
 
-    【2026-10-25】中文 Windows 的 netstat 输出是 GBK，Python3.14 的 text=True
+    中文 Windows 的 netstat 输出是 GBK，Python3.14 的 text=True
     按 UTF-8 解码会抛 UnicodeDecodeError，被外层 except 吞掉 → 清理静默失效
     （守护清完代理后杀不掉 mitmdump，每次成功抓包都泄漏一个 mitmdump）。
     改为字节读取 + utf-8/gbk/latin-1 逐级解码（与 adb_shell 同一套路）。
@@ -394,7 +387,7 @@ def load_package_override():
 
     config.ini 示例（装了多个 FGO 时用）：
         package=com.bilibili.fgo.qihoo
-    【P2-13】由手写行解析改为 configparser（兼容无 section 的键值风格）。
+    由手写行解析改为 configparser（兼容无 section 的键值风格）。
     """
     try:
         if not CONFIG_FILE.is_file():
@@ -571,7 +564,7 @@ def port_listening(port):
 def verify_proxy_ready(adb, serial, ip, port):
     """启动 FGO 前的代理自检，返回 (value_ok, icmp_ok, reason)。
 
-    【背景 2026-09-06】雷电14 首跑出现 FGO"连接失败，请检查网络"：
+    雷电14 首跑出现 FGO"连接失败，请检查网络"：
     代理写入失败/未生效时 FGO 带着死代理启动必然弹此错。
 
     value_ok=False → 硬伤：http_proxy 读回不对（写入失败/残留旧值），
@@ -600,7 +593,7 @@ def verify_proxy_ready(adb, serial, ip, port):
 
 # ---------------------------------------------------------------------------
 # mitmproxy CA 自动安装
-# 【2026-09-06 雷电14】全新模拟器系统库没有 mitmproxy CA → 360 渠道服 SDK 严格
+# 全新模拟器系统库没有 mitmproxy CA → 360 渠道服 SDK 严格
 # 校验证书 → FGO HTTPS 走代理握手失败 → 弹"连接失败，请检查网络"。
 # 修复：root 下把 CA 写入系统证书库（Android 14 双路径：APEX + legacy）。
 # ---------------------------------------------------------------------------
@@ -667,7 +660,7 @@ def ensure_mitm_ca(adb, serial):
                        capture_output=True, timeout=30)
     except Exception:
         return False, f"推送 CA 到模拟器失败（{name}）"
-    # 【2026-09-07 雷电9/Android9】雷电 9 默认 adbd 非 root → su -c mount 权限不足，
+    # 雷电 9 默认 adbd 非 root → su -c mount 权限不足，
     # 写 system 前先 `adb root` 把 adbd 切到 root（ro.debuggable=1 有效；失败不阻断）。
     try:
         subprocess.run([adb, "-s", serial, "root"], capture_output=True, timeout=15)
@@ -686,7 +679,7 @@ def ensure_mitm_ca(adb, serial):
         f"/apex/com.android.conscrypt/cacerts/{name} 2>/dev/null; "
         f"rm -f {tmp}"
     )
-    # 【2026-09-13 修复 su 引号 bug】旧写法 adb_shell(..., ["shell", "su", "-c", script])
+    # 旧写法 adb_shell(..., ["shell", "su", "-c", script])
     # 经 adb 拼接后设备端收到 `su -c mount -o rw,remount / ...`，su 的 getopt 只把
     # `mount` 当 -c 参数，后面的 `-o` 被当成 su 自身选项 → "su: invalid option -- o"，
     # 整条 root 写入静默失败（雷电 9 实测复现）。
@@ -713,7 +706,7 @@ def adb_restart_server(adb, timeout=30):
 def kill_stale_mitmdump():
     """启动前清理残留 mitmdump。
 
-    【P1-10】优先 netstat -ano 按 18080 端口 PID 精确清理（不误伤同名进程）；
+    优先 netstat -ano 按 18080 端口 PID 精确清理（不误伤同名进程）；
     兜底 PowerShell 按命令行匹配 **fgoaddon.py**（只杀本工具的 mitmdump，
     不误伤用户为其他目的启动的 mitmdump）；残留弹窗（pythonw
     wait_popup_win32.py）也按命令行精确匹配清理（不再用 WINDOWTITLE eq FGO* 模糊匹配）。
@@ -825,7 +818,7 @@ def start_mitmdump():
 
 
 def wait_for_capture(check_fn, popup, signal_file, proxy_str,
-                     timeout=600, title="FGO 一键抓包"):
+                     phase_file=None, timeout=600, title="FGO 一键抓包"):
     """复用 main() 已经启动的 popup 进程等待抓包数据，不再 spawn 第二个弹窗。
 
     关闭逻辑：
@@ -972,6 +965,8 @@ def main():
     print("FGO 一键抓包（弹窗前置·后台并行）")
     print("=" * 50)
 
+    import boot_common as boot
+
     # ===== 临时文件 =====
     phase_file = TOOLS_DIR / ".wait_phase.tmp"
     signal_file = TOOLS_DIR / ".wait_signal.tmp"
@@ -1087,8 +1082,9 @@ def main():
             print(f"[1/5] adb: {adb}", flush=True)
 
             set_phase("[1/5] 等待模拟器连接…")
-            deadline = time.time() + 120
+            deadline = time.time() + 150
             serial = None
+            launch_sent = False
             while time.time() < deadline:
                 if popup is not None and popup.poll() is not None:
                     state["cancelled"] = True
@@ -1096,10 +1092,13 @@ def main():
                 serial = find_serial(adb)
                 if serial:
                     break
+                if not launch_sent:
+                    boot.launch_emulator(adb)
+                    launch_sent = True
                 time.sleep(2)
             if not serial:
-                state["error"] = "2 分钟内未检测到模拟器"
-                set_phase("❌ 2 分钟内未检测到模拟器，请启动后重试")
+                state["error"] = "模拟器未能在限定时间内上线"
+                set_phase("❌ 模拟器未能上线，请手动启动后重试")
                 return
             state["serial"] = serial
             print(f"[1/5] 已连接: {serial}", flush=True)
@@ -1118,20 +1117,13 @@ def main():
             fgo_package = resolve_fgo_package(adb, serial)
             state["fgo_package"] = fgo_package
 
-            set_phase("[3/5] 清理残留代理…")
-            # 先打印旧值作诊断：若上回运行残留了失效代理（旧 IP），
-            # 正是 FGO"连接失败，请检查网络"的常见诱因。
-            try:
-                _old = adb_shell(adb, ["settings", "get", "global", "http_proxy"], serial).strip()
-                if _old and _old != "null":
-                    print(f"[3/5] 检测到残留代理 {_old}，正在清除…", flush=True)
-            except Exception:
-                pass
-            # ⚠️ 严禁用 `settings put global http_proxy :0` 清空！
-            # 历史回归：`:0` 会让 FGO/Unity 读老 API 拿到空代理 → 直连 443 →
-            # mitmdump 0 流量 → 永远抓不到 toplogin（"抓取没反应"）。
-            # 正确做法：直接 delete 三条 key，彻底清除不留危险值，[5/5] 再重设正确值。
-            clear_proxy(adb, serial)
+            set_phase("[3/5] 检测残留代理…")
+            # 三条 key 任一残留都会让 FGO 连不上；清代理必须在模拟器在线时完成。
+            # 严禁 settings put global http_proxy :0（空值令 FGO 直连 443）。
+            if not boot.detect_and_clear_proxy(adb, serial):
+                state["error"] = "残留代理无法清除，已中止"
+                set_phase("❌ 残留代理无法清除")
+                return
 
             set_phase("[4/5] 启动抓包服务…")
             # 无条件重启：端口被旧实例占用时若沿用旧进程，旧实例的日志句柄
@@ -1146,9 +1138,7 @@ def main():
             state["mitm_proc"] = proc
             print(f"[4/5] 抓包服务已启动（端口 {PORT}）", flush=True)
 
-            # 【2026-09-06 雷电14/Android 14】全新模拟器系统库没有 mitmproxy CA →
-            # 360 渠道服 SDK 严格校验 → FGO HTTPS 走代理握手失败 → "连接失败"。
-            # 此时 mitmdump 已跑过一次，~/.mitmproxy CA 必已生成，root 写双库（APEX+legacy）。
+            # 360 渠道服 SDK 严格校验 CA；未信任时 root 写双库（APEX+legacy）。
             ca_ok, ca_msg = ensure_mitm_ca(adb, serial)
             print(f"[4/5] CA: {ca_msg}", flush=True)
             if not ca_ok:
@@ -1171,7 +1161,7 @@ def main():
             # 历史回归 bug：曾把 http_proxy 设成 :0（空），FGO/Unity 读的正是老 API
             # → 拿到空代理 → 直连 443 → mitmdump 0 流量 → 永远抓不到 toplogin。
             # 老 API + 新 API 同时设，两种客户端都覆盖。
-            # 【2026-09-06 强化】设置后立即自检（读回 + ping 主机），最多 3 轮；
+            # 设置后立即自检（读回 + ping 主机），最多 3 轮；
             # 全部失败 → 报错退出（atexit 清代理恢复模拟器网络），
             # 绝不带死代理启动 FGO（否则 FGO 必弹"连接失败，请检查网络"）。
             state["proxy_verified"] = False
@@ -1315,7 +1305,7 @@ def main():
     fgo_pkg = state.get("fgo_package") or FGO_PACKAGE
     if adb2 and serial2:
         try:
-            # 【2026-09-06 启动前守门】就绪后到真正拉起 FGO 之间，
+            # 就绪后到真正拉起 FGO 之间，
             # 代理可能被外部清空（模拟器重连 / 系统重置 / 残留配置回写），
             # 一旦 FGO 带着失效代理启动必弹"连接失败，请检查网络"。
             # 这里在 force-stop 之前做最后一道读回校验：不匹配就重设 + 自愈。
@@ -1434,7 +1424,7 @@ def main():
         if not new:
             return None
         new.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-        # 【P0-2】JSON 合法性校验：必须能解析且含 response 字段，
+        # JSON 合法性校验：必须能解析且含 response 字段，
         # 否则视为写入未完成/半截文件（addon 原子写入后必满足），继续等待。
         for candidate in new:
             if candidate.stat().st_size < 1 * 1024 * 1024:
@@ -1458,13 +1448,11 @@ def main():
     wait_timeout = tap_cfg["tap_timeout"] if tap_cfg["auto_tap"] else 600
     cancelled, found = wait_for_capture(
         check_new_file, popup, signal_file,
-        proxy_str=proxy_str, timeout=wait_timeout,
+        proxy_str=proxy_str, phase_file=phase_file, timeout=wait_timeout,
     )
     tap_stop["done"] = True  # 无论成功/超时，都停掉自动点击
 
     # ===== 4. 清理 + 结果 =====
-    # 【2026-09-07 优雅方案】成功路径：不删代理、不杀 mitmdump、不动 FGO，
-    # 改由 _cleanup_daemon.py 在后台等 FGO 退出后再清理 → FGO 全程无感、不断线、不重启。
     _adb = state.get("adb")
     _serial = state.get("serial")
     _pkg = state.get("fgo_package") or FGO_PACKAGE
@@ -1534,7 +1522,6 @@ def main():
         )
         copied = (proc.returncode == 0)
     except Exception as e:
-        # 【P0-3】剪贴板失败不静默：写日志，引导走文件导入
         print(f"[!] 剪贴板复制失败：{e}", flush=True)
     if not copied:
         print("[!] 剪贴板复制失败（clip 不可用？），请用 Chaldea 文件导入", flush=True)
@@ -1545,89 +1532,11 @@ def main():
     else:
         print("[!] 请用 Chaldea 文件导入：导入 → Https抓包 → 选账号 → 从文件 → 选 toplogin 目录里最新的 json", flush=True)
 
-    # 拉起清理守护：等 FGO 退出后自动清代理 + 停 mitmdump。
-    # 这样 FGO 全程无感（代理/mitmdump 都还在），不会因清代理被切断连接。
-    daemon_proc = None
-    try:
-        daemon_py = TOOLS_DIR / "_cleanup_daemon.py"
-        if daemon_py.is_file() and _adb and _serial:
-            # 先清掉旧守护，避免多次抓包叠加多个守护
-            # 【P0-1】wmic 已弃用 → PowerShell Get-CimInstance 按命令行匹配后 Stop-Process
-            ps_kill_daemons = (
-                "Get-CimInstance Win32_Process | "
-                "Where-Object { $_.CommandLine -like '*_cleanup_daemon.py*' } | "
-                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
-            )
-            subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps_kill_daemons],
-                timeout=15, creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            daemon_proc = subprocess.Popen(
-                [pythonw, str(daemon_py), _adb, _serial, _pkg, str(PORT),
-                 str(os.getpid())],
-                creationflags=(
-                    subprocess.DETACHED_PROCESS
-                    | subprocess.CREATE_NEW_PROCESS_GROUP
-                    | subprocess.CREATE_NO_WINDOW
-                ),
-            )
-            print("[*] 清理守护已启动：FGO 退出后自动还原代理", flush=True)
-            # 存活确认（2026-10-25）：守护若秒死（pythonw 缺失/import 失败等），
-            # 不能交棒——否则 atexit 跳过清理 → 代理/mitmdump 永久残留。
-            # 等 3 秒覆盖 PowerShell 冷启动，自查杀/秒退此时必已发生。
-            time.sleep(3)
-            if daemon_proc.poll() is not None:
-                print(f"[!] 清理守护启动后立即退出（code={daemon_proc.returncode}），"
-                      f"改由本脚本退出时自动清理", flush=True)
-                daemon_proc = None
-            else:
-                # 交棒：主脚本退出时 atexit 不再清代理/停 mitmdump（避免切断 FGO 连接）
-                state["handoff_to_daemon"] = True
-    except Exception as e:
-        print(f"[!] 清理守护启动失败（可手动清代理）：{e}", flush=True)
-
-    # 【2026-11-01】交棒成功：主脚本等待守护退出——正常路径下 FGO 自行退出后，
-    # 守护清代理 + 停 mitmdump（模拟器保留）；若用户关掉 CMD 窗口（父进程死亡），
-    # 守护 ≤3s 内触发「全收」：清代理 + 停 mitmdump + 关闭整个模拟器。
-    if daemon_proc is not None:
-        print("[*] FGO 保持在线，本窗口将保持到 FGO 退出且代理还原后自动关闭", flush=True)
-        print("[*] 想直接收工？关掉本窗口即可：守护会自动清代理、停 mitmdump、关闭模拟器", flush=True)
-        try:
-            with open(RUN_LOG, "a", encoding="utf-8") as _f:
-                _f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [wait] 主脚本开始等待清理守护（FGO 保持在线）\n")
-        except Exception:
-            pass
-        waited = 0
-        rc = None
-        while rc is None:
-            try:
-                rc = daemon_proc.wait(timeout=60)
-            except subprocess.TimeoutExpired:
-                waited += 60
-                print(f"[*] FGO 仍在运行，代理保持中…（已等待 {waited // 60} 分钟）", flush=True)
-            except Exception as _e:
-                rc = -1
-                print(f"[!] 等待清理守护失败：{_e}", flush=True)
-        try:
-            with open(RUN_LOG, "a", encoding="utf-8") as _f:
-                _f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [wait] 清理守护退出 code={rc}（等待 {waited}s）\n")
-        except Exception:
-            pass
-        if rc == 0:
-            _left = adb_shell(
-                _adb, ["settings", "get", "global", "http_proxy"], _serial
-            ).strip()
-            if _left and _left != "null":
-                print(f"[!] 代理仍残留 {_left!r}，请手动运行 tools/restore_proxy.bat", flush=True)
-            else:
-                print("[✓] FGO 已退出，代理已还原，mitmdump 已停止，全部完成", flush=True)
-        elif rc == 2:
-            # 守护退出码 2 = 设备离线超过宽限期未恢复（见 _cleanup_daemon.py）
-            print("[!] 模拟器离线超过 10 分钟未恢复，守护未执行清理", flush=True)
-            print("[!] 下次开模拟器后双击 tools/一键抓包-恢复.bat 一键清代理", flush=True)
-        else:
-            print(f"[!] 清理未完成（守护退出码 {rc}）：代理可能仍残留在模拟器中", flush=True)
-            print("[!] 双击 tools/一键抓包-恢复.bat 一键清代理 + 停 mitmdump", flush=True)
+    # 交棒给清理守护：本窗口保持到守护退出；关掉窗口 = 守护触发「全收」。
+    boot.spawn_daemon_and_wait(
+        _adb, _serial, _pkg,
+        on_handoff=lambda: state.__setitem__("handoff_to_daemon", True),
+    )
 
 
 if __name__ == "__main__":

@@ -1,11 +1,6 @@
 @echo off
 chcp 65001 >nul
-rem Common Python lookup: known install paths first (avoids WindowsApps store stub), then PATH.
-rem 2026-10-25: old version took whatever `where python` returned first -- hitting the
-rem WindowsApps execution alias (store stub) made the bat open Microsoft Store instead
-rem of running, and the chosen candidate was never version-checked.
-rem Now: known install paths first, PATH candidates skip WindowsApps stubs,
-rem and every candidate must pass a 3.11+ smoke test.
+rem Duty: shared Python lookup for all .bat entries (skips WindowsApps stub, checks 3.11+).
 rem NOTE: keep this file ASCII-only -- cmd.exe mis-parses multi-byte lines flakily.
 set "PY="
 

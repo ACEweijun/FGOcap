@@ -11,20 +11,86 @@ AIGC:
 
 # FGO 一键抓包（导入 Chaldea）
 
-双击 bat 或 Quicker 触发 → 自动完成**代理设置 + 证书安装 + mitmdump 抓包 + FGO 冷启动 + 自动点登录** → 生成 `toplogin_<区服>_YYYYMMDD.json` 并自动复制剪贴板 → 导入 Chaldea。全程只在登录页出现时自动点击，无需其他任何交互。
+两个 Quicker 动作，各自对应一个**开机脚本**：都能自动启动模拟器、清掉上一次残留的代理，然后启动 FGO。区别只在中间要不要抓包。
+
+**关机完全自由**：模拟器想怎么关就怎么关。上次没清干净的代理，由下次开机时无条件兜底，不需要任何收工动作。
+
+## 两个开机入口
+
+| 动作 | 入口 | 流程 | 不做的事 |
+|---|---|---|---|
+| **A 抓包** | `tools/一键抓包.bat` | 启动模拟器 → 检测并清除残留代理 → 启 mitmdump + 装 CA → 设代理 → 冷启动 FGO → 自动点登录 → 抓 `toplogin` → 复制剪贴板 | — |
+| **B 直连** | `tools/一键开机-不抓包.bat` | 启动模拟器 → 检测并清除残留代理 → **停掉残留 mitmdump** → 直接冷启动 FGO | 不设代理、不启 mitmdump、不抓包、不写剪贴板 |
+
+两个入口共享 `boot_common.py` 的前置逻辑、同一个清理守护、同一个单实例互斥体（不会同时运行），且都保留 **CMD 窗口**与**关窗即全收**。
+
+### 开机兜底（两个脚本一模一样）
+
+```
+读三条 key：http_proxy / global_http_proxy_host / global_http_proxy_port
+任一非空且非 null → 打印「检测到残留代理 …」
+无条件 delete 三条 → 逐条读回，必须全为 null（最多重试 3 轮）
+仍失败 → 报错退出，绝不启动 FGO
+```
+
+清代理发生在**模拟器在线时**、任何「下一步」之前。这是本项目的正确性基础：即使上次是直接关模拟器、崩溃或断电，残留代理也活不过一次开机。
+
+### 关窗即全收
+
+抓包/开机成功后 CMD 窗口会一直挂着（父进程存活 = 守护不动作）。**关掉窗口** → 守护 ≤3 秒检测到父进程死亡 → 自动清代理（读回校验）→ 停 mitmdump → `ldconsole quit` 关闭整个模拟器。顺序不可颠倒：清代理必须在模拟器还活着时执行。
+
+正常路径（不关窗、FGO 自己退出）守护只清代理 + 停 mitmdump，**模拟器保留**。
+
+## 文件职责一览
+
+### 用户入口（Quicker / 双击）
+
+| 文件 | 职责 |
+|---|---|
+| `tools/一键抓包.bat` | 入口 A：调用 `auto_capture.py`（含抓包） |
+| `tools/一键开机-不抓包.bat` | 入口 B：调用 `start_plain.py`（不含抓包） |
+| `tools/一键抓包-恢复.bat` | 手动恢复：清代理 + 停 mitmdump（`restore.py`），异常中断时使用 |
+| `tools/一键抓包-自检.bat` | 环境自检：`doctor.py`，全程只读 |
+| `tools/find_python.cmd` | 四个 bat 共用的 Python 查找段（跳过商店桩、校验 3.11+） |
+
+### Python 模块
+
+| 文件 | 职责 | 被谁调用 |
+|---|---|---|
+| `tools/auto_capture.py` | **入口 A 主流程**：抓包、设代理、装 CA、冷启动 FGO、剪贴板；同时提供全项目复用的底层 helper（adb / 代理读写 / 端口 / CA） | `一键抓包.bat`；其余模块 `import auto_capture as ac` |
+| `tools/start_plain.py` | **入口 B 主流程**：清残留、停 mitmdump、启动 FGO、挂窗口 | `一键开机-不抓包.bat` |
+| `tools/boot_common.py` | **两个入口共用**：启动模拟器 `ldconsole launch` / 等 boot / 检测清残留代理（读回校验）/ 冷启动 FGO / 拉起守护并挂住窗口 | A、B 局部导入 |
+| `tools/_cleanup_daemon.py` | **清理守护**（detached 后台）：等 FGO 退出还原环境；父进程死亡则全收（含关模拟器） | `boot_common.spawn_daemon_and_wait` |
+| `tools/restore.py` | 环境恢复：清代理 + 停 mitmdump，可选卸载 CA / 强停 FGO | `一键抓包-恢复.bat` |
+| `tools/doctor.py` | 环境自检：只读，输出阻塞项，`--json` 供脚本消费 | `一键抓包-自检.bat` |
+| `tools/fgoaddon.py` | mitmproxy 插件：抓 `/login/top` 响应并落盘 `toplogin` JSON（源自 Chaldea） | mitmdump 启动时加载 |
+| `tools/wait_popup_win32.py` | Win32 进度弹窗（独立进程，靠 `PhaseFile` / `SignalFile` 通信） | `auto_capture.py` |
+
+### 配置与运行时产物
+
+| 文件 | 职责 |
+|---|---|
+| `tools/config.ini.example` | 配置模板，复制为 `config.ini` 生效 |
+| `tools/config.ini` | 本地配置（可选，不存在时全自动探测；被 `.gitignore` 忽略） |
+| `tools/requirements.txt` | Python 依赖（mitmproxy） |
+| `tools/toplogin/` | 抓包输出（只保留最新一次；**含账号登录信息，切勿外传**） |
+| `tools/mitmdump.log` | 全量流量日志，"抓不到"先看它 |
+| `tools/run.log` | 统一异常日志 + `[wait]` / `[daemon]` 生命周期 |
+| `tools/.wait_phase.tmp` / `.wait_signal.tmp` | 进度弹窗状态 / 取消信号 |
+| 根目录 `README.md` / `LICENSE` / `.gitignore` | 说明 / MIT 许可 / 忽略规则 |
+
+运行时产物均被 `.gitignore` 排除，无需手动管理。
 
 ## 特性
 
-- **全自动**：从触发到抓包完成，无需键盘鼠标操作（登录按钮由 ADB 自动点击，可在 `config.ini` 设 `auto_tap=0` 关闭）
-- **证书自动安装**：检测到模拟器未信任 mitmproxy CA 时，自动 root 写入系统信任库——Android 9 写 legacy 库，Android 10+ 写 APEX + legacy 双库（前提：模拟器已开 root，见下方「安装」）
-- **代理自检 + 守门**：设置代理后读回校验（最多 3 轮），全部失败则报错退出**绝不带着失效代理启动 FGO**
-- **单实例防重入**：命名互斥体保证同时只有一个抓包流程——重复触发会弹窗提示「已有抓包流程正在运行中」并退出，不会两个实例互相抢代理、互停抓包服务（进程被杀后锁自动释放，不会留锁）
-- **模拟器自动适配**：按盘符扫描 `<盘>:\leidian\LDPlayer*\adb.exe` 与 `<盘>:\software\leidian\LDPlayer*\adb.exe`（重装系统换盘符也不怕），再加硬编码路径与 PATH 三级兜底
-- **FGO 零打扰**：抓包成功后**不删代理、不杀进程、不重启 FGO**，由后台守护等你退出 FGO 后自动还原环境（避免游戏连接被切断）；CMD 窗口同步保持到清理完成后才自动关闭（见「使用」第 6 步）。守护带状态机与读回校验：**先关模拟器**（或模拟器崩溃/adb 抖动）不会误判为 FGO 退出，会等设备回来（≤10 分钟）再继续；超时未回或清理后读回代理仍在，则如实上报失败并指引恢复
-- **关窗即全收**：抓包成功后想直接收工，**关掉 CMD 窗口就走**——守护检测到窗口被关，自动清代理、停 mitmdump、关闭整个模拟器（约 3~10 秒，全程后台，无需等待）
-- 抓到数据自动复制剪贴板，**不弹窗、不打开文件夹**；`toplogin/` 目录只保留最新一次抓包结果（旧 json 自动删除），剪贴板复制失败时控制台提示改用 Chaldea「从文件」导入
-- **带日期文件名 + 自动清场**：输出文件为 `toplogin_<区服>_YYYYMMDD.json`（带日期便于归档），写新文件前自动清空目录里的旧 json——目录里永远只有最新一次抓包的结果
-- **坏数据不落盘**：抓包响应先本地校验 JSON 合法性（含 `response` 字段），非法/半截文件不写入，原子落盘避免损坏
+- **全自动**：从触发到抓包完成无需键盘鼠标；登录按钮由 ADB 自动点击（`config.ini` 可关）
+- **证书自动安装**：模拟器未信任 mitmproxy CA 时 root 写入系统库（Android 9 legacy，Android 10+ APEX + legacy 双库）
+- **代理自检 + 守门**：设置后读回校验（3 轮），全败则报错退出，绝不带失效代理启动 FGO
+- **单实例防重入**：命名互斥体，两个入口共用一个锁
+- **模拟器自动适配**：按盘符扫 `LDPlayer*/adb.exe` + 硬编码路径 + PATH 三级兜底
+- **FGO 零打扰**：抓包成功后不删代理、不杀进程、不重启 FGO，由守护等 FGO 退出后还原（避免切断长连接）
+- **守护状态机**：区分「FGO 已退出」与「设备不可达」；后者等设备回来（≤10 分钟）再继续，避免假清理
+- **坏数据不落盘**：JSON 合法性校验（含 `response` 字段）+ 原子落盘；`toplogin/` 只留最新一个
 
 ## 工作原理
 
@@ -35,113 +101,82 @@ FGO (模拟器内) ──HTTPS──→ Android 系统代理 ──→ mitmdump 
                         toplogin_<区服>_YYYYMMDD.json ──→ Chaldea 导入
 ```
 
-- FGO（Unity）读 Android 老 API `settings global http_proxy`，值必须是 `ip:port`；脚本**同时写新 API**（`http_proxy_host` / `http_proxy_port`）以兼容新版雷电
-- `/login/top` 只在 **冷启动后走完整登录流程**时发送一次（「菜单→设置→重新登录」不会触发）
-- 脚本因此用 `force-stop` + `am start` 保证触发；抓完后**不再动 FGO**
-- FGO 是 Unity 渲染，`uiautomator` 对游戏内按钮无效 → 用 ADB 盲点屏幕中央（自动读取 `wm size` 适配分辨率）
+- FGO（Unity）读老 API `settings global http_proxy`，值必须是 `ip:port`；脚本同时写新 API 兼容新版雷电
+- `/login/top` 只在**冷启动后走完整登录流程**时发一次（「菜单→设置→重新登录」不会触发）
+- 因此用 `force-stop` + `am start` 保证触发；抓完后不再动 FGO
+- FGO 是 Unity 渲染，`uiautomator` 无效 → ADB 盲点屏幕中央（`wm size` 自适应）
 
 ## 环境要求
 
 | 依赖 | 要求 |
 |---|---|
 | Windows | 10 / 11 |
-| 模拟器 | 雷电 9 / 12 / 14（已验证；脚本按 `LDPlayer*` 通配扫描任意版本），**必须开启 root** |
+| 模拟器 | 雷电 9 / 12 / 14（按 `LDPlayer*` 通配扫描），**必须开启 root** |
 | FGO | 国服 360 渠道服 `com.bilibili.fgo.qihoo`（其他渠道见配置） |
-| Python | 3.11+（安装时务必勾选 **Add to PATH**） |
+| Python | 3.11+（安装时勾选 **Add to PATH**） |
 | mitmproxy | `pip install -r tools/requirements.txt` |
 | Chaldea | 用于导入抓包数据 |
 
-> **CA 证书是必需的**：国服 360 渠道服的 SDK 会严格校验证书，不装 CA 时 HTTPS 握手会失败并表现为「连接失败」。脚本会自动安装——**前提是模拟器已开 root**。
+> **CA 证书必需**：360 渠道服 SDK 严格校验证书，未装 CA 会表现为「连接失败」。脚本自动安装，前提是模拟器已开 root。
 
 ## 安装
 
-### 1. 装 Python + mitmproxy
+### 1. Python + mitmproxy
 
 ```bash
 pip install -r tools/requirements.txt
 ```
 
-> ⚠️ **Windows 商店桩坑**：重装系统后裸敲 `python` 可能弹出 Microsoft Store——这是「应用执行别名」把 `python` 指向了商店桩。**本工具的 `find_python.cmd` 会自动跳过商店桩**（已知安装位置优先 → PATH 逐条跳过 WindowsApps 路径 → 候选验证 3.11+），用 bat 触发无需手动关别名；但自己在终端里敲 `python` 手动跑脚本时，仍建议安装真实 Python 时勾选 *Add to PATH* 并关掉应用执行别名。验证：新开终端跑 `where python`，第一行应是真实 Python 路径。
+> **Windows 商店桩坑**：裸敲 `python` 可能弹 Microsoft Store。`find_python.cmd` 会自动跳过商店桩（已知安装位置优先 → PATH 跳过 WindowsApps → 候选校验 3.11+），用 bat 触发无需手动关别名。手动在终端跑脚本时建议 `where python` 确认第一行是真实路径。
 
-### 2. 模拟器开启 ROOT 权限（二选一）
+### 2. 模拟器开启 ROOT（二选一）
 
-**GUI**：多开管理器 → 对应模拟器 → 设置 → 勾选「ROOT 权限」→ 重启模拟器。
+**GUI**：多开管理器 → 设置 → 勾选「ROOT 权限」→ 重启。
 
-**命令行**（可脚本化，推荐）：
+**命令行**：
 
 ```bat
 ldconsole modify --index 0 --root 1
 ldconsole reboot  --index 0
 ```
 
-> `--index` 是多开编号，主实例为 0。多开环境下每个实例都要单独开 root。
-
 ### 3. 装好 FGO，下载本仓库到任意目录
 
-```
-FGOcap/
-├── tools/
-│   ├── 一键抓包.bat        ← 主抓包入口
-│   ├── 一键抓包-自检.bat   ← 环境自检入口（调用 doctor.py）
-│   ├── 一键抓包-恢复.bat   ← 环境恢复入口（调用 restore.py）
-│   ├── restore_proxy.bat   ← 异常中断后一键清代理 + 停 mitmdump
-│   ├── find_python.cmd     ← 三个主入口 bat 共用的 Python 查找段（自动跳过商店桩 + 版本校验）
-│   ├── auto_capture.py     ← 主脚本
-│   ├── doctor.py           ← 环境自检脚本
-│   ├── restore.py          ← 环境恢复脚本
-│   ├── _cleanup_daemon.py  ← 清理守护（自动拉起：等 FGO 退出后清代理+停 mitmdump，带设备离线等待与读回校验；CMD 窗口被关时自动全收并关闭模拟器）
-│   ├── fgoaddon.py         ← mitmproxy 插件（来自 Chaldea）
-│   ├── wait_popup_win32.py ← 进度弹窗
-│   ├── config.ini.example  ← 配置模板（复制为 config.ini 生效）
-│   ├── config.ini          ← 本地配置（可选；不存在时全自动探测，被 .gitignore 忽略）
-│   └── requirements.txt    ← Python 依赖清单
-└── README.md / LICENSE / .gitignore
-```
-
-**运行时产物**（脚本自动创建/清理，均被 `.gitignore` 排除，无需手动管理）：
-
-```
-tools/toplogin/            ← 抓包输出目录（自动创建；含账号登录信息，切勿外传）
-tools/mitmdump.log         ← mitmdump 全量流量日志（排查"抓不到"就看它）
-tools/run.log              ← 脚本统一异常日志（带时间戳；出异常贴这个给维护者）
-tools/.wait_phase.tmp      ← 进度弹窗状态文件（status_popup=1 时生成）
-tools/.wait_signal.tmp     ← 进度弹窗取消信号文件
-tools/__pycache__/         ← Python 字节码缓存（自动生成）
-```
+文件清单见上方「文件职责一览」。
 
 ## 重装系统 / 新机速查清单
 
-重装 Windows 或换机后，按顺序补齐这 5 项即可恢复抓包能力（每一项都是踩过坑验证过的）：
-
 | # | 项目 | 操作 | 验证 |
 |---|---|---|---|
-| 1 | 真实 Python | python.org 安装包，勾 **Add to PATH**（`find_python.cmd` 会自动跳过商店桩，此项主要为手动终端着想）；关闭应用执行别名的 python 桩 | `where python` 第一行非 WindowsApps |
-| 2 | mitmproxy | `pip install -r tools/requirements.txt` | `python -c "from mitmproxy.tools.main import mitmdump"` 无报错（SAC 环境下 `mitmdump --version` 会被拦，别用它验证） |
-| 3 | 雷电模拟器 | 安装位置任意（脚本按盘符自动扫）；建议把安装目录加入 PATH | `where adb` 命中模拟器目录 |
-| 4 | ROOT 权限 | `ldconsole modify --index 0 --root 1` + `ldconsole reboot --index 0` | `adb shell su -c id` 返回 `uid=0(root)` |
-| 5 | 重开终端 | PATH 是进程启动时读取的，改完 PATH 必须**重开终端**再跑脚本 | — |
+| 1 | 真实 Python | 安装包勾 **Add to PATH**；关闭应用执行别名 | `where python` 第一行非 WindowsApps |
+| 2 | mitmproxy | `pip install -r tools/requirements.txt` | `python -c "from mitmproxy.tools.main import mitmdump"` 无报错 |
+| 3 | 雷电模拟器 | 安装位置任意（脚本按盘符自动扫） | `where adb` 命中模拟器目录 |
+| 4 | ROOT 权限 | `ldconsole modify --index 0 --root 1` + `reboot` | `adb shell su -c id` 返回 `uid=0(root)` |
+| 5 | 重开终端 | PATH 是进程启动时读取的 | — |
 
-> CA 证书无需手动装：首次运行脚本时会自动检测并写入模拟器（需 root）。
+> CA 首次运行自动装，无需手动操作（需 root）。
 
 ## 使用
 
-1. 启动模拟器（等完全开机，**不要先开 FGO**）
-2. 双击 `一键抓包.bat`（若已有抓包在运行，会弹窗提示并退出，不会重复启动）
-3. 弹窗显示「✓ 抓包环境已就绪」→ FGO 被自动启动 → 登录按钮被 ADB 自动点击
-4. 公告页加载完成 = 抓包成功 → **无弹窗**，剪贴板已有数据（文件：`tools/toplogin/toplogin_<区服>_YYYYMMDD.json`，目录内只保留最新一个，旧 json 自动删除）
-5. Chaldea → 导入 → Https抓包 → 选账号 → **从剪贴板**；若控制台提示「剪贴板复制失败」，点 **从文件** 选择 toplogin 目录里最新的 json
-6. **CMD 窗口会保持到 FGO 彻底退出、代理自动还原后才自动关闭**；**想直接收工？关掉 CMD 窗口即可**——守护会自动清代理、停 mitmdump、把整个模拟器关掉（约 3~10 秒，全程后台）
+**动作 A（要抓包）**
 
-**Quicker**：「运行或打开」步骤直接指向 `tools\一键抓包.bat`（参数留空，勾「失败后停止」）。
-脚本内部会等待模拟器就绪（最多 2 分钟），可与「启动模拟器」步骤并行。
+1. Quicker 触发 `tools\一键抓包.bat`（参数留空，勾「失败后停止」）——**不需要先开模拟器**，脚本会自动启动并等待就绪
+2. 弹窗显示「✓ 抓包环境已就绪」→ FGO 自动启动 → 登录按钮被自动点击
+3. 公告页加载完成 = 抓包成功：剪贴板已有数据，文件在 `tools/toplogin/toplogin_<区服>_YYYYMMDD.json`
+4. Chaldea → 导入 → Https抓包 → 选账号 → **从剪贴板**（若提示复制失败，改「从文件」）
+5. CMD 窗口保持到 FGO 退出、代理还原后自动关闭；**想收工直接关窗** = 自动清代理 + 停 mitmdump + 关模拟器
 
-> ⚠️ **工程放在网络映射盘（NAS）上时**：Quicker 以管理员身份运行的话，`net use X:` 建的盘符在**提权会话里不存在** → 找不到 bat，Quicker 静默什么都不做。见「常见问题」里那两条。
+**动作 B（只玩，不抓包）**
+
+1. Quicker 触发 `tools\一键开机-不抓包.bat`
+2. 脚本启动模拟器 → 清残留代理 → 停残留 mitmdump → 直接启动 FGO
+3. CMD 窗口保持；关窗同样触发全收
+
+> ⚠️ 工程放在网络映射盘（NAS）上时：Quicker 以管理员身份运行，`net use X:` 建的盘符在提权会话里不存在 → 找不到 bat、静默无反应。见「常见问题」最后一条。
 
 ## 配置
 
-包名**自动探测**（列出含 `fate`/`fgo` 的包 → 按候选表挑 → 自动查 launcher activity），一般不用管。
-
-需要手动指定时，把 `tools/config.ini.example` 复制为 `tools/config.ini`：
+包名自动探测（列含 `fate`/`fgo` 的包 → 候选表 → 自动查 launcher），一般不用管。需手动指定时把 `tools/config.ini.example` 复制为 `tools/config.ini`：
 
 ```ini
 package=com.bilibili.fgo.qihoo
@@ -154,38 +189,33 @@ package=com.bilibili.fgo.qihoo
 | 国服其他渠道 | `com.bilibili.fategrandorder` |
 | 日服 / 台服 | `com.aniplex.fategrandorder` |
 
-**config.ini 支持项**（均可选，缺省用默认值）：
-
 | 键 | 含义 | 默认 |
 |---|---|---|
-| `package` | FGO 包名（自动探测时无需设置） | 自动探测 |
-| `auto_tap` | 是否自动点击登录按钮（1 开 / 0 关） | 1 |
-| `tap_interval` | 自动点击间隔（秒） | 1.5 |
+| `package` | FGO 包名 | 自动探测 |
+| `auto_tap` | 自动点击登录按钮（1/0） | 1 |
+| `tap_interval` | 点击间隔（秒） | 1.5 |
 | `tap_timeout` | 自动点击窗口时长（秒） | 90 |
-| `tap_x` / `tap_y` | 盲点坐标（留空按 `wm size` 自适应屏幕中央） | 自动 |
-| `status_popup` | 是否显示 Win32 进度弹窗（1 开 / 0 关） | 1 |
+| `tap_x` / `tap_y` | 盲点坐标（留空按 `wm size` 取屏幕中央） | 自动 |
+| `status_popup` | Win32 进度弹窗（1/0） | 1 |
 
-> 布尔项支持 `1/0/true/false/yes/no/on/off`，写错会回退默认值，不影响运行。
+> 布尔项支持 `1/0/true/false/yes/no/on/off`，写错回退默认值。
 
 ## 常见问题
 
 | 问题 | 原因 / 解决 |
 |---|---|
-| 一直抓不到 | 看 `tools/mitmdump.log`：无 FGO 流量 = 代理未生效；有流量无 `login/top` = FGO 没走登录流程（需冷启动） |
-| FGO 报「连接失败」 | 模拟器未信任 CA（360 SDK 校验）→ 确认 root 已开（验证命令见速查清单 #4），重跑脚本会自动补装 |
-| 弹「CA 写入模拟器失败」但 root 已开 | 老版本脚本的 `su -c` 引号 bug（2026-09-13 已修复），更新 `auto_capture.py` 即可；或手动装：`adb push %USERPROFILE%\.mitmproxy\mitmproxy-ca-cert.pem /data/local/tmp/c8750f0d.0` 后 `adb shell "su -c 'cp /data/local/tmp/c8750f0d.0 /system/etc/security/cacerts/'"` + `chmod 644` + 重启模拟器 |
-| 弹「未找到模拟器 adb」 | 模拟器未装或不在常见路径：确认已装雷电并开机；或把安装目录加入 PATH 后**重开终端** |
-| 弹「未找到 mitmdump 可执行文件」 | 未装 mitmproxy：`pip install -r tools/requirements.txt`；装完重开终端 |
-| 弹「抓包服务未能监听端口 18080：Popen 失败 [WinError 4551]」 | **Smart App Control / WDAC 阻止了无签名的 mitmdump.exe**。v1.4.0 起脚本已自动规避（改用有签名的 python.exe 以 `-c` 方式拉起 mitmdump，实测不再被拦）——看到此错说明用的是旧版脚本，更新 `auto_capture.py` 即可；仍被拦则检查系统「Smart App Control」是否开启（Windows 安全中心 → 应用和浏览器控制） |
-| 模拟器上不了网 | 代理残留：**直接双击 `tools/restore_proxy.bat` 一键清代理 + 停 mitmdump**；手动命令为 `adb shell settings delete global http_proxy` + 删除 `global_http_proxy_host` / `global_http_proxy_port`。**严禁用 `settings put global http_proxy :0`**（空值会让 FGO 直连 443，抓不到包）。若上次抓包后窗口提示过「清理未完成/守护未执行清理」，即为该场景的提前告知 |
-| 提示「剪贴板复制失败」 | 8MB 大文本偶发复制失败：改用 Chaldea「从文件」导入 `toplogin/` 目录里最新的 json，不影响结果 |
-| 抓包成功后 CMD 窗口一直不关 | **设计如此**：窗口保持到 FGO 彻底退出、代理还原后才自动关闭（后台清理守护在干活，控制台有进度行）。**不想要了直接关窗口 = 一键收工**：守护检测到窗口被关会自动清代理、停 mitmdump、关闭整个模拟器（约 3~10 秒，无需等待）。**先关了模拟器也没事**：守护会识别设备离线并等待恢复（≤10 分钟），重开模拟器后继续等 FGO 退出再清理 |
-| 弹「已有抓包流程正在运行中」 | 单实例保护（命名互斥体）：同时只允许一个抓包流程。确认没有别的在跑就等几秒再试；进程被杀后锁自动释放，无需手动清理 |
-| toplogin 目录里旧 json 去哪了 | 设计只保留最新一次抓包结果：addon 落盘前清空旧 json，主脚本成功路径再兜底删一次 |
-| 异常后行为怪异、日志难定位；或想看抓包等待/清理过程 | 看 `tools/run.log`：统一异常日志（时间戳 + traceback），抓包成功后还会记录 `[wait]` 等待与清理生命周期（守护何时退出、等了多久）及 `[daemon]` 守护侧明细（设备离线等待/读回校验/放弃清理），把末尾内容贴给维护者 |
-| mitmdump 启动失败 | `pip install -r tools/requirements.txt`，确认 `mitmdump --version` 可运行 |
-| **窗口刷屏「'xxx' 不是内部或外部命令，也不是可运行的程序或批处理文件」** | 批处理被编辑器存成了 **LF 换行**（Unix）。cmd.exe 的批处理解析器只认 **CRLF**，LF 会把行切错、`goto` / `for` 全部失效，于是每一行都报这个错。修复：换行符改回 CRLF——VS Code 右下角把 `LF` 切成 `CRLF`，或 `python -c "p=r'tools/一键抓包.bat';d=open(p,'rb').read().replace(b'\r\n',b'\n').replace(b'\n',b'\r\n');open(p,'wb').write(d)"`。**改动所有 `.bat` / `.cmd` 文件（含 `find_python.cmd` / `restore_proxy.bat`）后务必确认仍是 CRLF** |
-| **Quicker 触发毫无反应（连 cmd 窗口都不出现）** | 工程在映射盘（如 `X:\`）上、而 Quicker 以**管理员身份**运行时：`net use` 建的盘符只属于非提权会话，提权上下文里 `X:` 根本不存在，ShellExecute 找不到文件 → 静默失败、Quicker 也不报错。两条路：① 放一个**本地启动器** `FGOcap_launch.cmd`（放在本地盘，Quicker 第 1 步指向它）：先 `if not exist` 判断目标，缺失就自己 `net use X: \\nas\share`，再 `call` 真正的 bat，并把每次运行写进日志，便于事后定位；② 导入 `EnableLinkedConnections=1`（`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System`，DWORD）后**重启**，让映射盘对提权进程可见，之后 Quicker 可直连 `X:\...` |
+| 一直抓不到 | 看 `tools/mitmdump.log`：无 FGO 流量 = 代理未生效；有流量无 `login/top` = 没走登录流程（需冷启动） |
+| FGO 报「连接失败」 | 模拟器未信任 CA（360 SDK 校验）→ 确认 root 已开后重跑脚本自动补装 |
+| 模拟器上不了网 | 代理残留：**下次开机任一脚本会自动清**；也可立刻双击 `tools/一键抓包-恢复.bat`。手动命令为 `adb shell settings delete global http_proxy` + 删除 `global_http_proxy_host` / `global_http_proxy_port`。**严禁 `settings put global http_proxy :0`**（空值令 FGO 直连 443） |
+| CMD 窗口一直不关 | 设计如此：窗口在 = 父进程活 = 守护不动作。关窗即全收（清代理 + 停 mitmdump + 关模拟器，约 3~10 秒） |
+| 先关了模拟器，代理没清 | 模拟器关掉后 PC 侧进不去，无法清。**这是设计预期**——下次开机脚本无条件清残留 + 读回校验 |
+| 弹「已有抓包流程正在运行中」 | 单实例互斥体（A/B 共用）：确认没别的在跑就等几秒；进程被杀后锁自动释放 |
+| 提示「剪贴板复制失败」 | 8MB 大文本偶发失败：改用 Chaldea「从文件」导入 |
+| 弹「未找到模拟器 adb」 | 模拟器未装或不在常见路径；加入 PATH 后**重开终端** |
+| 弹「抓包服务未能监听端口 18080：[WinError 4551]」 | Smart App Control / WDAC 拦无签名 `mitmdump.exe`；脚本已改用有签名的 `python.exe -c` 拉起。仍被拦则检查系统 Smart App Control |
+| 异常后行为怪异 | 看 `tools/run.log`：异常 traceback + `[wait]` / `[daemon]` 生命周期，贴末尾给维护者 |
+| **bat 刷屏「'xxx' 不是内部或外部命令」** | 批处理被存成了 **LF**（cmd.exe 只认 CRLF）。改回 CRLF；**改动任何 `.bat` / `.cmd` 后务必确认仍是 CRLF** |
+| **Quicker 触发毫无反应** | 工程在映射盘而 Quicker 以管理员运行：提权会话看不到 `X:`。两条路：① 放本地启动器 `FGOcap_launch.cmd`（先 `net use` 再 `call` 真 bat）；② 导入 `EnableLinkedConnections=1`（`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System`，DWORD）后重启 |
 
 ## 风险提示
 
@@ -198,5 +228,6 @@ package=com.bilibili.fgo.qihoo
 - [Chaldea](https://github.com/chaldea-center/chaldea) —— 数据导入工具，`fgoaddon.py` 源自其官方工具包
 - [mitmproxy](https://mitmproxy.org/) —— HTTPS 抓包核心（MIT License）
 
-本仓库脚本（`auto_capture.py` / `doctor.py` / `restore.py` / `_cleanup_daemon.py` / `wait_popup_win32.py` / `一键抓包.bat` / `一键抓包-自检.bat` / `一键抓包-恢复.bat` / `restore_proxy.bat` / `find_python.cmd`）采用 MIT License；`fgoaddon.py` 版权归 Chaldea 项目所有。
+本仓库脚本（`auto_capture.py` / `start_plain.py` / `boot_common.py` / `_cleanup_daemon.py` / `doctor.py` / `restore.py` / `wait_popup_win32.py` / 四个 `.bat` / `find_python.cmd`）采用 MIT License；`fgoaddon.py` 版权归 Chaldea 项目所有。
+
 *（内容由AI生成，仅供参考）*

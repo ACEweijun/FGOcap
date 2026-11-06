@@ -1,5 +1,5 @@
 """
-python 3.11
+职责：mitmproxy 插件，抓取 /login/top 响应并落盘 toplogin JSON（源自 Chaldea）。
 Updated/更新日期: 2024-05-11
 Usage/用法 (CMD/PowerShell): mitmdump -p 8888 -s fgoaddon.py
 """
@@ -40,7 +40,7 @@ def save_response(content: bytes | str, region: Region, key: str):
       · 非合法 JSON 一律不落盘（只打日志）
       · 先写 .tmp 再 replace，保证目录里出现的文件一定是完整的
 
-    文件名固定为 <key>_<区服>_<日期>.json（【P1-4】带日期便于归档区分），
+    文件名固定为 <key>_<区服>_<日期>.json（带日期便于归档区分），
     且每次输出前清空目录里的旧 json —— 目录里永远只留最新一次抓包的结果，
     文件名稳定好找好导入。
     """
