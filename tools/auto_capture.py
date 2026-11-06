@@ -12,8 +12,8 @@
 和同一个单实例互斥体，因此不会同时运行。
 
 关键约束：
-  - 清代理必须在模拟器在线时执行；严禁 settings put global http_proxy :0
-    （空值会让 FGO 直连 443，抓不到包）。
+  - 清代理必须在模拟器在线时执行，且必须刷新运行时代理属性（clear_proxy
+    内的瞬时 put :0）；严禁把 :0 留作最终状态（FGO 直连 443，抓不到包）。
   - 成功路径不删代理、不停 mitmdump、不动 FGO：清代理会切断游戏连接，
     环境还原交给 _cleanup_daemon.py 在 FGO 退出后执行。
   - CMD 窗口保持到守护退出；关掉窗口 = 守护触发「全收」（清代理 + 停 mitmdump
@@ -300,9 +300,15 @@ def adb_shell(adb, args, serial=None, timeout=60, return_rc=False):
 def clear_proxy(adb, serial):
     """删除模拟器全局代理三条 key（老 API + 新 API）。
 
-    严禁用 `settings put global http_proxy :0` 清空（历史回归令 FGO 直连 443），
-    只允许 delete 彻底清除。
+    先瞬时 `put :0` 再 delete：settings delete 只清数据库，不刷新 Android
+    运行时的 Java 代理属性（http.proxyHost）——FGO 的 360 SDK OkHttp 仍按旧
+    代理连已停的 mitmdump，表现为「连接失败」。put :0 触发框架把运行时代理
+    重置为「无代理」，随后 delete 把数据库归 null。
+    严禁把 :0 留作最终状态（历史回归：FGO 直连 443，A 模式抓不到包）。
     """
+    adb_shell(adb, ["settings", "put", "global", "http_proxy", ":0"],
+              serial, timeout=15)
+    time.sleep(1)
     adb_shell(adb, ["settings", "delete", "global", "http_proxy"],
               serial, timeout=15)
     adb_shell(adb, ["settings", "delete", "global", "global_http_proxy_host"],
@@ -1118,8 +1124,8 @@ def main():
             state["fgo_package"] = fgo_package
 
             set_phase("[3/5] 检测残留代理…")
-            # 三条 key 任一残留都会让 FGO 连不上；清代理必须在模拟器在线时完成。
-            # 严禁 settings put global http_proxy :0（空值令 FGO 直连 443）。
+            # 三条 key 任一残留都会让 FGO 连不上；清代理必须在模拟器在线时完成，
+            # 且要刷新运行时代理属性（见 clear_proxy docstring）。
             if not boot.detect_and_clear_proxy(adb, serial):
                 state["error"] = "残留代理无法清除，已中止"
                 set_phase("❌ 残留代理无法清除")

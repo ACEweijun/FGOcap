@@ -212,7 +212,8 @@ package=com.bilibili.fgo.qihoo
 |---|---|
 | 一直抓不到 | 看 `tools/mitmdump.log`：无 FGO 流量 = 代理未生效；有流量无 `login/top` = 没走登录流程（需冷启动） |
 | FGO 报「连接失败」 | 模拟器未信任 CA（360 SDK 校验）→ 确认 root 已开后重跑脚本自动补装 |
-| 模拟器上不了网 | 代理残留：**下次开机任一脚本会自动清**；也可立刻双击 `tools/一键抓包-恢复.bat`。手动命令为 `adb shell settings delete global http_proxy` + 删除 `global_http_proxy_host` / `global_http_proxy_port`。**严禁 `settings put global http_proxy :0`**（空值令 FGO 直连 443） |
+| 模拟器上不了网 | 代理残留：**下次开机任一脚本会自动清**；也可立刻双击 `tools/一键抓包-恢复.bat`。手动清 = `settings delete` 三条 key；清完**重启 FGO 或模拟器**——settings 干净后 Android 运行时的 Java 代理属性可能仍指向旧代理。**严禁把 `settings put global http_proxy :0` 留作最终状态**（FGO 直连 443）；脚本内部用它做瞬时刷新后立即 delete |
+| B（不抓包）进游戏报「连接失败」 | 不是代理没清干净：settings 已全 null，但 Android 运行时 Java 代理属性未刷新，FGO 的 360 SDK 仍连已停的旧代理。clear_proxy 已内置瞬时 put :0 强制刷新；手动清过代理则重启 FGO / 模拟器即可 |
 | CMD 窗口一直不关 | 只有 FGO 还在运行且模拟器在线时才保持（窗口在 = 父进程活 = 守护不动作）。FGO 退出、关掉模拟器、或关掉窗口，都会让它自动关闭 |
 | 先关了模拟器，代理没清 | 模拟器关掉后 PC 侧进不去，无法清。**这是设计预期**：守护会立即停 mitmdump 并关闭 CMD 窗口，代理残留由下次开机脚本无条件清除 + 读回校验 |
 | 弹「已有抓包流程正在运行中」 | 单实例互斥体（A/B 共用）：确认没别的在跑就等几秒；进程被杀后锁自动释放 |

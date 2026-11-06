@@ -10,8 +10,8 @@
     python restore.py --serial 127.0.0.1:5555
 
 用途：脚本被强杀 / 断电 / 手动关窗后，代理或 mitmdump 残留的兜底恢复。
-⚠️ 严禁用 `settings put global http_proxy :0` 清空代理（历史回归：空值会让 FGO
-   直连 443 → 抓不到包），本脚本只用 delete。
+清代理统一走 auto_capture.clear_proxy（delete 前瞬时 put :0 刷新运行时代理
+属性，最终状态归 null；严禁把 :0 留作最终状态——FGO 会直连 443 抓不到包）。
 """
 
 import argparse
