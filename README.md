@@ -20,9 +20,9 @@ AIGC:
 | 动作 | 入口 | 流程 | 不做的事 |
 |---|---|---|---|
 | **A 抓包** | `tools/一键抓包.bat` | 启动模拟器 → 检测并清除残留代理 → 启 mitmdump + 装 CA → 设代理 → 冷启动 FGO → 自动点登录 → 抓 `toplogin` → 复制剪贴板 | — |
-| **B 直连** | `tools/一键开机-不抓包.bat` | 启动模拟器 → 检测并清除残留代理 → **停掉残留 mitmdump** → 直接冷启动 FGO | 不设代理、不启 mitmdump、不抓包、不写剪贴板 |
+| **B 直连** | `tools/一键开机-不抓包.bat` | 启动模拟器 → 检测并清除残留代理 → **停掉残留 mitmdump** → 直接冷启动 FGO → **自动连点到公告/通知页** | 不设代理、不启 mitmdump、不抓包、不写剪贴板 |
 
-两个入口共享 `boot_common.py` 的前置逻辑、同一个清理守护、同一个单实例互斥体（不会同时运行），且都保留 **CMD 窗口**、**关窗即全收**与**离线即收工**。
+两个入口共享 `boot_common.py` 的前置逻辑、`auto_capture.py` 的自动点击 worker、同一个清理守护、同一个单实例互斥体（不会同时运行），且都保留 **CMD 窗口**、**关窗即全收**与**离线即收工**。A 抓到 toplogin 即停点击，B 连点 40s 后自动停。
 
 ### 开机兜底（两个脚本一模一样）
 
@@ -64,7 +64,7 @@ AIGC:
 | 文件 | 职责 | 被谁调用 |
 |---|---|---|
 | `tools/auto_capture.py` | **入口 A 主流程**：抓包、设代理、装 CA、冷启动 FGO、剪贴板；同时提供全项目复用的底层 helper（adb / 代理读写 / 端口 / CA） | `一键抓包.bat`；其余模块 `import auto_capture as ac` |
-| `tools/start_plain.py` | **入口 B 主流程**：清残留、停 mitmdump、启动 FGO、挂窗口 | `一键开机-不抓包.bat` |
+| `tools/start_plain.py` | **入口 B 主流程**：清残留、停 mitmdump、启动 FGO、自动连点到通知页、挂窗口 | `一键开机-不抓包.bat` |
 | `tools/boot_common.py` | **两个入口共用**：启动模拟器 `ldconsole launch` / 等 boot / 检测清残留代理（读回校验）/ 冷启动 FGO / 拉起守护并挂住窗口 | A、B 局部导入 |
 | `tools/_cleanup_daemon.py` | **清理守护**（detached 后台）：等 FGO 退出还原环境；父进程死亡则全收（含关模拟器）；设备离线则立即收工 | `boot_common.spawn_daemon_and_wait` |
 | `tools/restore.py` | 环境恢复：清代理 + 停 mitmdump，可选卸载 CA / 强停 FGO | `一键抓包-恢复.bat` |
@@ -89,7 +89,7 @@ AIGC:
 
 ## 特性
 
-- **全自动**：从触发到抓包完成无需键盘鼠标；登录按钮由 ADB 自动点击（`config.ini` 可关）
+- **全自动**：A 从触发到抓包完成、B 从触发到公告/通知页，均无需键盘鼠标；「请点击游戏界面」/登录按钮由 ADB 自动连点（`config.ini` 可关）
 - **证书自动安装**：模拟器未信任 mitmproxy CA 时 root 写入系统库（Android 9 legacy，Android 10+ APEX + legacy 双库）
 - **代理自检 + 守门**：设置后读回校验（3 轮），全败则报错退出，绝不带失效代理启动 FGO
 - **单实例防重入**：命名互斥体，两个入口共用一个锁
@@ -175,7 +175,7 @@ ldconsole reboot  --index 0
 **动作 B（只玩，不抓包）**
 
 1. Quicker 触发 `tools\一键开机-不抓包.bat`
-2. 脚本启动模拟器 → 清残留代理 → 停残留 mitmdump → 直接启动 FGO
+2. 脚本启动模拟器 → 清残留代理 → 停残留 mitmdump → 启动 FGO → **自动连点屏幕把游戏推到公告/通知页**（`plain_tap_duration`，默认 40s 后停止）
 3. CMD 窗口保持；关窗触发全收，直接关模拟器则离线即收工
 
 > ⚠️ 工程放在网络映射盘（NAS）上时：Quicker 以管理员身份运行，`net use X:` 建的盘符在提权会话里不存在 → 找不到 bat、静默无反应。见「常见问题」最后一条。
@@ -200,7 +200,8 @@ package=com.bilibili.fgo.qihoo
 | `package` | FGO 包名 | 自动探测 |
 | `auto_tap` | 自动点击登录按钮（1/0） | 1 |
 | `tap_interval` | 点击间隔（秒） | 1.5 |
-| `tap_timeout` | 自动点击窗口时长（秒） | 90 |
+| `tap_timeout` | A：自动点击窗口时长（秒），抓到 toplogin 即停 | 90 |
+| `plain_tap_duration` | B：连点到公告/通知页的时长（秒） | 40 |
 | `tap_x` / `tap_y` | 盲点坐标（留空按 `wm size` 取屏幕中央） | 自动 |
 | `status_popup` | Win32 进度弹窗（1/0） | 1 |
 

@@ -404,17 +404,22 @@ def load_package_override():
 
 
 def load_autotap_config():
-    """从 tools/config.ini 读取自动点击登录配置（可选）。
+    """从 tools/config.ini 读取两个入口共用的自动点击配置（可选）。
+
+    A（抓包）：抓到 toplogin 立即停，最长 tap_timeout。
+    B（不抓包）：没有抓包信号，连点到公告/通知页后按 plain_tap_duration 停。
 
     config.ini 示例：
-        auto_tap=1            # 1=开启自动点击登录（默认），0=关闭（自己手点）
-        tap_interval=1.5      # 点击间隔（秒，默认 1.5）
-        tap_timeout=90        # 持续多久没抓到就结束（秒，默认 90）
+        auto_tap=1             # 1=开启自动点击（默认），0=关闭（自己手点）
+        tap_interval=1.5       # 点击间隔（秒，默认 1.5）
+        tap_timeout=90         # A 最长点击时长（秒，默认 90）
+        plain_tap_duration=40  # B 连点时长（秒，默认 40）
 
     实测：脚本启动 mitmdump→FGO 首次联网约 13s，联网→toplogin 落地约 27s，
-    单次完整约 40s，故 90s 留足 2 倍余量。
+    单次完整约 40s，故 A 的 90s 留足 2 倍余量、B 取 40s 覆盖到公告页。
     """
     cfg = {"auto_tap": True, "tap_interval": 1.5, "tap_timeout": 90,
+           "plain_tap_duration": 40,
            "tap_x": None, "tap_y": None, "status_popup": True}
     try:
         if not CONFIG_FILE.is_file():
@@ -424,6 +429,7 @@ def load_autotap_config():
         cfg["auto_tap"] = cp.getboolean("DEFAULT", "auto_tap", fallback=True)
         cfg["tap_interval"] = cp.getfloat("DEFAULT", "tap_interval", fallback=1.5)
         cfg["tap_timeout"] = cp.getint("DEFAULT", "tap_timeout", fallback=90)
+        cfg["plain_tap_duration"] = cp.getint("DEFAULT", "plain_tap_duration", fallback=40)
         if cp.has_option("DEFAULT", "tap_x"):
             try:
                 cfg["tap_x"] = int(cp.getfloat("DEFAULT", "tap_x"))
@@ -442,9 +448,11 @@ def load_autotap_config():
 
 def auto_tap_worker(adb, serial, interval, duration, stop_flag,
                     tap_x=None, tap_y=None):
-    """FGO 启动后定时点击屏幕正中央（或 config 指定的坐标），帮用户自动点登录。
+    """FGO 启动后定时点击屏幕正中央（或 config 指定的坐标），两个入口共用。
 
-    stop_flag: dict，主流程抓到 toplogin 后置 {"done": True} 让本线程退出。
+    A（抓包）：点过「请点击游戏界面」/登录，抓到 toplogin 后置 stop_flag 立即停。
+    B（不抓包）：没有抓包信号，连点到公告/通知页，跑满 duration 自然停。
+    stop_flag: dict，置 {"done": True} 可提前让本线程退出。
     tap_x / tap_y: config.ini 指定的绝对坐标；为 None 时自动按分辨率算中心点
                    （改分辨率无需改代码）。
     """
