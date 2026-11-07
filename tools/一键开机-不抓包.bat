@@ -20,6 +20,6 @@ exit /b
 
 :nopython
 echo [ERROR] 未找到 Python！
-echo 请先安装 Python 3.10+（勾选 Add to PATH）并 pip install -r requirements.txt
+echo 请先安装 Python 3.11+（勾选 Add to PATH）并 pip install -r requirements.txt
 pause
 exit /b 1

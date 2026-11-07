@@ -1,7 +1,7 @@
 """
 职责：mitmproxy 插件，抓取 /login/top 响应并落盘 toplogin JSON（源自 Chaldea）。
 Updated/更新日期: 2024-05-11
-Usage/用法 (CMD/PowerShell): mitmdump -p 8888 -s fgoaddon.py
+Usage/用法 (CMD/PowerShell): mitmdump -p 18080 -s fgoaddon.py
 """
 
 import base64

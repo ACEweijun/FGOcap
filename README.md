@@ -11,6 +11,8 @@ AIGC:
 
 # FGO 一键抓包（导入 Chaldea）
 
+> 适用版本 **v1.8.0** ｜ 文档核对 2026-11-07 ｜ 代码地图与契约见「维护者 / AI 接手索引」
+
 两个 Quicker 动作，各自对应一个**开机脚本**：都能自动启动模拟器、清掉上一次残留的代理，然后启动 FGO。区别只在中间要不要抓包。
 
 **关机完全自由**：模拟器想怎么关就怎么关。守护检测到设备离线会立即停 mitmdump 并结束 CMD 窗口；上次没清干净的代理，由下次开机时无条件兜底，不需要任何收工动作。
@@ -22,7 +24,7 @@ AIGC:
 | **A 抓包** | `tools/一键抓包.bat` | 启动模拟器 → 检测并清除残留代理 → 启 mitmdump + 装 CA → 设代理 → 冷启动 FGO → 自动点登录 → 抓 `toplogin` → 复制剪贴板 | — |
 | **B 直连** | `tools/一键开机-不抓包.bat` | 启动模拟器 → 检测并清除残留代理 → **停掉残留 mitmdump** → 直接冷启动 FGO → **自动连点到公告/通知页** | 不设代理、不启 mitmdump、不抓包、不写剪贴板 |
 
-两个入口共享 `boot_common.py` 的前置逻辑、`auto_capture.py` 的自动点击 worker、同一个清理守护、同一个单实例互斥体（不会同时运行），且都保留 **CMD 窗口**、**关窗即全收**与**离线即收工**。A 抓到 toplogin 即停点击，B 连点 40s 后自动停。
+两个入口共享 `boot_common.py` 的清代理与守护逻辑、`auto_capture.py` 的自动点击 worker、同一个清理守护，以及同名单实例互斥体（A/B 各定义一次同名字符串，改名须两处同步，见「维护者 / AI 接手索引」），且都保留 **CMD 窗口**、**关窗即全收**与**离线即收工**。A 抓到 toplogin 即停点击，B 连点 40s 后自动停。
 
 ### 开机兜底（两个脚本一模一样）
 
@@ -65,7 +67,7 @@ AIGC:
 |---|---|---|
 | `tools/auto_capture.py` | **入口 A 主流程**：抓包、设代理、装 CA、冷启动 FGO、剪贴板；同时提供全项目复用的底层 helper（adb / 代理读写 / 端口 / CA） | `一键抓包.bat`；其余模块 `import auto_capture as ac` |
 | `tools/start_plain.py` | **入口 B 主流程**：清残留、停 mitmdump、启动 FGO、自动连点到通知页、挂窗口 | `一键开机-不抓包.bat` |
-| `tools/boot_common.py` | **两个入口共用**：启动模拟器 `ldconsole launch` / 等 boot / 检测清残留代理（读回校验）/ 冷启动 FGO / 拉起守护并挂住窗口 | A、B 局部导入 |
+| `tools/boot_common.py` | **两个入口共用的 helper**：`ldconsole launch` / 检测清残留代理（读回校验）/ 拉起守护并挂住窗口；`ensure_emulator` 与 `start_fgo` 仅 B 用，A 的启动与等 boot 在 `auto_capture.setup_worker` 内 | A、B 局部导入 |
 | `tools/_cleanup_daemon.py` | **清理守护**（detached 后台）：等 FGO 退出还原环境；父进程死亡则全收（含关模拟器）；设备离线则立即收工 | `boot_common.spawn_daemon_and_wait` |
 | `tools/restore.py` | 环境恢复：清代理 + 停 mitmdump，可选卸载 CA / 强停 FGO | `一键抓包-恢复.bat` |
 | `tools/doctor.py` | 环境自检：只读，输出阻塞项，`--json` 供脚本消费 | `一键抓包-自检.bat` |
@@ -86,6 +88,80 @@ AIGC:
 | 根目录 `README.md` / `LICENSE` / `.gitignore` | 说明 / MIT 许可 / 忽略规则 |
 
 运行时产物均被 `.gitignore` 排除，无需手动管理。
+
+## 维护者 / AI 接手索引
+
+面向「要读懂或改动本项目」的人 / Agent；用户使用说明见上文，这里只放代码地图与契约。
+
+### 改行为 → 改哪里
+
+| 要改的东西 | 落点 |
+|---|---|
+| 清代理 / `:0` 瞬时刷新 | `auto_capture.clear_proxy()`：开机兜底、守护、restore 全走它 |
+| 开机清残留（三条 key 读回 3 轮） | `boot_common.detect_and_clear_proxy()` |
+| A 主流程、启动与等 boot | `auto_capture.main() → setup_worker()` |
+| B 主流程 | `start_plain.main()`；连点时长键 `plain_tap_duration` 在 `auto_capture.load_autotap_config()` |
+| 冷启动 FGO（B） | `boot_common.start_fgo()`；A 在自身主流程里冷启动 |
+| 收工三路径 | `_cleanup_daemon.main()`；消费方 `boot_common.spawn_daemon_and_wait()` |
+| 守护交接 / 防重复清理 | `spawn_daemon_and_wait(..., on_handoff=...)` + `auto_capture.main()` 的 `atexit` |
+| 单实例锁名 | `auto_capture.py` 的 `CreateMutexW` 字面量 + `boot_common.MUTEX_NAME`（两处同名） |
+| 自动连点 | `auto_capture.auto_tap_worker()` |
+| 端口 / 日志 / 输出目录 | `auto_capture.py` 顶部 `PORT=18080` / `RUN_LOG` / `TOPLOGIN_DIR` |
+| 抓包落盘命名 | `fgoaddon.save_response()` → `toplogin_<区服>_YYYYMMDD.json` |
+| 进度弹窗 | `wait_popup_win32.py`（`PhaseFile` / `SignalFile`） |
+
+### 不变量（改动前必读）
+
+| # | 约束 |
+|---|---|
+| 1 | `settings put global http_proxy :0` 只能瞬时刷新后立刻 `delete`；严禁留作最终状态（FGO 直连 443，A 抓不到包） |
+| 2 | 清代理必须在模拟器在线时、且早于任何 `ldconsole quit`；全收顺序固定：清代理 → 停 mitmdump → 关模拟器 |
+| 3 | A 抓包成功路径不删代理、不停 mitmdump、不动 FGO；还原统一交给守护 |
+| 4 | 守护用 `pidof` 返回码区分 `gone` / `offline`；`offline` 绝不下发清代理命令（发不进去会假成功） |
+| 5 | `on_handoff` 触发后关闭 `atexit` 清理，避免主脚本与守护重复清理 |
+| 6 | 所有 `.bat` / `.cmd` 必须 CRLF；`find_python.cmd` 必须纯 ASCII |
+| 7 | `fgoaddon.py` 源自 Chaldea，除说明文字外不改；`tools/config.ini` 不入库 |
+
+### 退出码契约
+
+| 进程 | 码 | 含义 / 消费方 |
+|---|---|---|
+| `_cleanup_daemon.py` | `0` / `2` / `3` | 清理成功且读回通过 / 设备离线未清代理（交下次开机兜底）/ 清理后仍有残留；由 `boot_common` 与 `start_plain` 消费 |
+| A `auto_capture.main()` | 恒 `0` | 无返回值、无 `sys.exit`；`一键抓包.bat` 的 `if errorlevel 1 pause` 不生效 |
+| B `start_plain.main()` | `0` 或守护 rc | 把 `rc=2` 归一为 `0`，避免离线收工时 bat `pause` 卡住窗口 |
+| 守护运行时上限 | 8 小时 | 超时后走正常清理（`parent_gone=False`，不关模拟器） |
+| `doctor.py` | `0` / `1` | 无阻塞项 / 有阻塞项（`--json` 供脚本消费） |
+
+### 副本拓扑
+
+| 副本 | 位置 | 角色 |
+|---|---|---|
+| 权威仓库 | 本机 `C:\Users\12749\Desktop\FGOcap` | git 仓库；提交、tag 从这里发出 |
+| 远程 | GitHub `ACEweijun` | `origin/main` 与 `v*` tag |
+| NAS 副本 | `\\fnos8505v1\云共享\FGOcap` | 与权威仓库并存的代码副本；曾出现「NAS 旧副本导致已修 bug 复现」 |
+
+- Quicker 动作指向哪个副本由动作配置决定；版本差是排障第一现场。
+- NAS 上会话开始前已存在的历史文件可能被写保护（写入被拒）；`run.log` 排障以本地副本为准。
+
+### 验证方式（当前可用）
+
+| 检查 | 方式 |
+|---|---|
+| 语法 | `python -m py_compile tools/*.py` |
+| 批处理换行 | 4 个 `.bat` + `find_python.cmd` 全部 CRLF |
+| 只读自检 | `tools/一键抓包-自检.bat` 或 `python tools/doctor.py --json` |
+| 端到端 | 需真实模拟器 + FGO；仓库不含自动化测试，历史 E2E 均为临时脚本、用完即清 |
+
+### 术语
+
+| 词 | 含义 |
+|---|---|
+| A / B | 含抓包 / 不含抓包的开机入口 |
+| 守护 | `_cleanup_daemon.py`，detached 后台，负责还原环境 |
+| 关窗即全收 / 离线即收工 | 父进程死亡 → 清代理 + 停 mitmdump + 关模拟器 / 设备离线 → 只停 mitmdump 并退出 |
+| 三条 key | `http_proxy`、`global_http_proxy_host`、`global_http_proxy_port` |
+| toplogin | `/login/top` 响应落盘的 JSON，含账号登录信息 |
+| PhaseFile / SignalFile | 进度弹窗与主脚本之间的文件通信通道 |
 
 ## 特性
 

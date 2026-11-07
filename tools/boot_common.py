@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-职责：两个开机入口共用的前置与收尾（唯一实现，避免 A / B 各写一份）。
+职责：两个开机入口共用的 helper（清残留代理、拉起守护并挂窗口等）。
+A 的「启动模拟器 + 等 boot_completed」在 auto_capture.setup_worker 内自实现，
+B 走本模块 ensure_emulator；两者 boot 等待超时不同（A 60s / B 120s）。
 
     A = 一键抓包.bat → auto_capture.py      含抓包
     B = 一键开机-不抓包.bat → start_plain.py  不含抓包
@@ -10,7 +12,8 @@
     ensure_emulator(adb, index=0) -> serial     B 用：启动 + 等上线 + 等 boot
     detect_and_clear_proxy(adb, serial)         两个入口共用：检测残留 → 清除 → 读回校验
     start_fgo(adb, serial) -> bool              B 用：冷启动 FGO
-    spawn_daemon_and_wait(adb, serial, pkg)     两个入口共用：拉起守护 + 挂住 CMD 窗口
+    spawn_daemon_and_wait(adb, serial, pkg, on_handoff=None)
+                                                两个入口共用：拉起守护 + 挂住 CMD 窗口；on_handoff 关闭 A 的 atexit 清理
 
 约束：清代理必须在模拟器在线时完成；关模拟器只能由守护在最后执行。
 本模块由入口脚本局部导入，避免 auto_capture 以 __main__ 运行时出现循环导入。

@@ -9,7 +9,7 @@
     python restore.py --keep-mitm      只清代理，不停 mitmdump
     python restore.py --serial 127.0.0.1:5555
 
-用途：脚本被强杀 / 断电 / 手动关窗后，代理或 mitmdump 残留的兜底恢复。
+用途：脚本被强杀 / 断电 / 守护未拉起等异常后，代理或 mitmdump 残留的兜底恢复；正常关窗由守护自动全收。
 清代理统一走 auto_capture.clear_proxy（delete 前瞬时 put :0 刷新运行时代理
 属性，最终状态归 null；严禁把 :0 留作最终状态——FGO 会直连 443 抓不到包）。
 """

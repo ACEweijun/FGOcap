@@ -20,7 +20,7 @@ exit /b
 
 :nopython
 echo [ERROR] 未找到 Python！
-echo 请先安装 Python 3.10+（勾选 Add to PATH）：
+echo 请先安装 Python 3.11+（勾选 Add to PATH）：
 echo   https://www.python.org/downloads/
 echo 然后安装 mitmproxy： pip install mitmproxy
 pause
